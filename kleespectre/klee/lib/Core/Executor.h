@@ -252,9 +252,24 @@ private:
   /// The maximum Speculative Execution Windows (SEW)   
   int maxSEW;
 
+   /// Number of orders with speculative Execution
+  int specOrder;
+
   /// Record the possible Spectre 
   SpectreRecorder spectreRecorder;
 
+  // for fuzzing
+  typedef struct {
+    std::string location;
+    bool truePath;
+    bool falsePath;
+  } BranchInfo;
+
+  std::vector<BranchInfo> branches;
+
+  void dumpEmitBranch();
+  
+  void addEmitBranch(bool isRemovable, const std::string& location, bool direction, std::string branchLog);
   /* SPSP end */
 
   llvm::Function* getTargetFunction(llvm::Value *calledVal,

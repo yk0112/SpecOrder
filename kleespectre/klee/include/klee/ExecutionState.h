@@ -16,15 +16,15 @@
 #include "klee/Internal/System/Time.h"
 #include "klee/MergeHandler.h"
 
-
 // FIXME: We do not want to be exposing these? :(
 #include "../../lib/Core/AddressSpace.h"
 #include "klee/Internal/Module/KInstIterator.h"
 
 #include <map>
-#include <set>
-#include <vector>
 #include <queue>
+#include <set>
+#include <string>
+#include <vector>
 
 namespace klee {
 class Array;
@@ -111,7 +111,8 @@ public:
   /// used for searchers to decide what paths to explore
   double weight;
 
-  /// @brief Exploration depth, i.e., number of times KLEE branched for this state
+  /// @brief Exploration depth, i.e., number of times KLEE branched for this
+  /// state
   unsigned depth;
 
   /// @brief History of complete path: represents branches taken to
@@ -133,7 +134,7 @@ public:
   bool forkDisabled;
 
   /// @brief Set containing which lines in which files are covered by this state
-  std::map<const std::string *, std::set<unsigned> > coveredLines;
+  std::map<const std::string *, std::set<unsigned>> coveredLines;
 
   /// @brief Pointer to the process tree of the current state
   PTreeNode *ptreeNode;
@@ -141,7 +142,7 @@ public:
   /// @brief Ordered list of symbolics: used to generate test cases.
   //
   // FIXME: Move to a shared list structure (not critical).
-  std::vector<std::pair<const MemoryObject *, const Array *> > symbolics;
+  std::vector<std::pair<const MemoryObject *, const Array *>> symbolics;
 
   /// @brief Set of used array names for this state.  Used to avoid collisions.
   std::set<std::string> arrayNames;
@@ -151,7 +152,7 @@ public:
   void removeFnAlias(std::string fn);
 
   // The objects handling the klee_open_merge calls this state ran through
-  std::vector<ref<MergeHandler> > openMergeStack;
+  std::vector<ref<MergeHandler>> openMergeStack;
 
   // The numbers of times this state has run through Executor::stepInstruction
   std::uint64_t steppedInstructions;
@@ -163,7 +164,18 @@ public:
   /// Count  the instrucitons in a speulative path
   int specInstCount;
 
-  /// State tag 
+  //  Count miss speculative branch
+  uint64_t specBranchCount;
+
+  // for fuzzing
+  std::string missLocation;
+
+  bool missDirection;
+
+  bool isRemovable;
+
+  std::string branchLog;
+  /// State tag
   uint64_t tag;
 
   uint64_t pTag;
@@ -185,8 +197,8 @@ public:
 
   CacheState *cacheState;
 
-  std::queue<ExecutionState*> specStates;
-  std::vector<ExecutionState*> finishedSpecStates;
+  std::queue<ExecutionState *> specStates;
+  std::vector<ExecutionState *> finishedSpecStates;
 
 private:
   ExecutionState() : ptreeNode(0) {}
@@ -196,32 +208,31 @@ public:
 
   // XXX total hack, just used to make a state so solver can
   // use on structure
-  ExecutionState(const std::vector<ref<Expr> > &assumptions);
+  ExecutionState(const std::vector<ref<Expr>> &assumptions);
 
   ExecutionState(const ExecutionState &state);
   ExecutionState(const ExecutionState &state, bool ispec);
-  
+
   ~ExecutionState();
 
   ExecutionState *branch();
   ExecutionState *specBranch(int sew);
-
 
   void pushFrame(KInstIterator caller, KFunction *kf);
   void popFrame();
 
   void addSymbolic(const MemoryObject *mo, const Array *array);
   void addConstraint(ref<Expr> e) { constraints.addConstraint(e); }
-  bool getSensitivity() {return constraints.isSensitive;}
+  bool getSensitivity() { return constraints.isSensitive; }
 
   bool merge(const ExecutionState &b);
   void dumpStack(llvm::raw_ostream &out) const;
 
-  bool hasSpeStates() {return specStates.size() != 0;}
+  bool hasSpeStates() { return specStates.size() != 0; }
   void addSpeState(ExecutionState *state);
   ExecutionState &selectSpState();
   void removeHeadState(bool isCache);
 };
-}
+} // namespace klee
 
 #endif

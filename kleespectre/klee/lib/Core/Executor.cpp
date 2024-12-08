@@ -85,6 +85,10 @@
 #include <string>
 #include <sys/mman.h>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include <iostream>
+
+using json = nlohmann::ordered_json;
 
 using namespace llvm;
 using namespace klee;
@@ -137,6 +141,11 @@ namespace {
 
 
     /* SPSE options */
+
+    cl::opt<unsigned> SpeculativeOrder("speculative-order",
+                cl::init(1),
+                cl::desc("Specifying orders with speculative execution (default=1)."),
+                cl::cat(SpecCat));
 
     cl::opt<bool>
         EnableSpeculativeExecution("enable-speculative",
@@ -503,6 +512,7 @@ Executor::Executor(LLVMContext &ctx, const InterpreterOptions &opts,
         isCacheEnabled = EnableCacheModeling;
         if (ispecEnabled) {
             maxSEW = MaxSew;
+            specOrder = SpeculativeOrder;
             klee_warning("@Speculative execution modeling is enable! maxSEW=%d", maxSEW);
         }
 
@@ -1107,12 +1117,22 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       file.find("klee-uclibc") != std::string::npos) {
         isInUserCode = false;
     }
-
+  
+  current.branchLog = current.branchLog + ":" + std::to_string(current.prevPC->info->line);
   if (res==Solver::True) {
     //klee_message("Solver: True: %d", current.tag);
     if (isInUserCode && !isInternal && ispecEnabled) {
+       if (current.specBranchCount < SpeculativeOrder) {
         ExecutionState *spTrueState = &current;
         spTrueState = current.specBranch(maxSEW);        
+
+        if (current.specBranchCount == 0) {
+            spTrueState->missLocation =  file + ":" + std::to_string(current.prevPC->info->line);
+            spTrueState->missDirection = false;
+        }
+
+        spTrueState->specBranchCount++;
+
         ++stats::spStates;
 
         if (current.isSpeculative) {
@@ -1129,6 +1149,10 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         } else {
             spectreRecorder.recordBR(current.prevPC->info, true);
         }
+      }
+      else {
+        current.isRemovable = false;
+      }
     }
 
     if (!isInternal) {
@@ -1141,9 +1165,17 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
   } else if (res==Solver::False) {
     //klee_message("Solver: False: %d", current.tag);
     if (isInUserCode && !isInternal && ispecEnabled) {
+       if (current.specBranchCount < SpeculativeOrder) {
         ExecutionState *spFalseState = &current;
         spFalseState = current.specBranch(maxSEW);        
-    
+
+        if (current.specBranchCount == 0) {
+            spFalseState->missLocation =  file + ":" + std::to_string(current.prevPC->info->line);
+            spFalseState->missDirection = true;
+        }
+
+        spFalseState->specBranchCount++;
+
         ++stats::spStates;
 
         if (current.isSpeculative) {
@@ -1159,6 +1191,10 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         } else {
             spectreRecorder.recordBR(current.prevPC->info, true);
         }
+      } 
+      else {
+        current.isRemovable = false;
+      }
     }
 
     if (!isInternal) {
@@ -1174,8 +1210,11 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
     ExecutionState *spFalseState, *spTrueState = &current;
 
 	if (isInUserCode && !isInternal && ispecEnabled) {
+     if (current.specBranchCount < SpeculativeOrder) {
+
         ++stats::spStates;
         ++stats::spStates;
+
         if (!current.isSpeculative)
             ++stats::forks;
 
@@ -1192,6 +1231,16 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
 
         spTrueState = trueState->specBranch(maxSEW);        
         spFalseState = falseState->specBranch(maxSEW);        
+
+        if (current.specBranchCount == 0) {
+            spTrueState->missLocation =  file + ":" + std::to_string(current.prevPC->info->line);
+            spTrueState->missDirection = false;
+            spFalseState->missLocation =  file + ":" + std::to_string(current.prevPC->info->line);
+            spFalseState->missDirection= true;
+        }
+
+        spFalseState->specBranchCount++;
+        spTrueState->specBranchCount++;
 
         if (current.isSpeculative) {
             ++stats::spStates;
@@ -1228,7 +1277,36 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         }
         spTrueState->pTag = spTrueState->pPerentState->tag;
         spFalseState->pTag = spFalseState->pPerentState->tag;
-    
+      }
+      else {
+        if (!current.isSpeculative)
+          ++stats::forks;
+        
+        current.isRemovable = false;
+
+        falseState = trueState->branch();
+
+        addConstraint(*trueState, condition);
+        addConstraint(*falseState, Expr::createIsZero(condition));
+
+        if (current.isSpeculative) {
+          ++stats::spStates;
+          ExecutionState *perentState = current.pPerentState;
+          falseState->pPerentState = perentState;
+          perentState->addSpeState(falseState);
+        } 
+        // 投機的な状態ではないのにorderの上限を超える場合は無い
+        // else {
+        //   addedStates.push_back(falseState);
+        //
+        //   current.ptreeNode->data = 0;
+        //   std::pair<PTree::Node *, PTree::Node *> res =
+        //       processTree->split(current.ptreeNode, falseState, trueState);
+        //
+        //   falseState->ptreeNode = res.first;
+        //   trueState->ptreeNode = res.second;
+        // }
+      }
     } else {
         ++stats::forks;
         falseState = trueState->branch();
@@ -1838,6 +1916,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     if (state.isSpeculative) {
         if (state.specInstCount <= 0) {
             //llvm::errs() << "\n@ SEW = 0, State: " << state.tag << "\n";
+            addEmitBranch(state.isRemovable, state.missLocation, state.missDirection, state.branchLog);
             terminateSpecState(state);
             return;
         }
@@ -2058,6 +2137,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                                       }
         case Instruction::Switch: {
                                       if (state.isSpeculative) {
+                                          addEmitBranch(false, state.missLocation, state.missDirection, state.branchLog);
                                           terminateSpecState(state);
                                           return;
                                       }
@@ -2938,6 +3018,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         case Instruction::Fence: {
                                      // Ignore for now
                                      // The Speculative execution is terminated on a fence
+                                     if (state.isSpeculative) {
+                                      addEmitBranch(state.isRemovable, state.missLocation, state.missDirection, state.branchLog);
+                                     }
                                      terminateSpecState(state);
                                      break;
                                  }
@@ -3194,6 +3277,44 @@ void Executor::doDumpStates() {
     updateStates(nullptr);
 }
 
+void Executor::addEmitBranch(bool isRemovable, const std::string& location, bool direction, std::string branchLog) {
+    for (auto& branch : branches) {
+            if (branch.location == location) {
+                if (direction && branch.truePath) {
+                   branch.truePath = isRemovable;
+                }
+                else if (!direction && branch.falsePath) {
+                    branch.falsePath = isRemovable;
+                }
+                return;
+            }
+    }
+                
+    if(direction) branches.push_back({location, isRemovable, true});
+    else branches.push_back({location, true, isRemovable});
+}
+
+void Executor::dumpEmitBranch() {
+    json output;
+
+    for (const auto& branch : branches) {
+        json branch_json;
+        branch_json["location"] = branch.location;
+        branch_json["truePath"] = branch.truePath;
+        branch_json["falsePath"] = branch.falsePath;
+        output["branches"].push_back(branch_json);
+    }
+
+    std::ofstream file("output.json");
+    if (!file.is_open()) {
+        std::cerr << "cannot open file" << std::endl;
+        return;
+    }
+
+    file << output.dump(4) << std::endl;
+    file.close();
+}
+
 void Executor::run(ExecutionState &initialState) {
     bindModuleConstants();
 
@@ -3310,6 +3431,7 @@ void Executor::run(ExecutionState &initialState) {
     delete searcher;
     searcher = 0;
 
+    dumpEmitBranch();
     doDumpStates();
 }
 
@@ -3448,6 +3570,7 @@ void Executor::terminateStateEarly(ExecutionState &state,
         const Twine &message) {
 
      if (state.isSpeculative) {
+        addEmitBranch(false, state.missLocation, state.missDirection, state.branchLog);
         terminateSpecState(state);
         return;
     }
@@ -3463,6 +3586,7 @@ void Executor::terminateStateEarly(ExecutionState &state,
 void Executor::terminateStateOnExit(ExecutionState &state) {
 
    if (state.isSpeculative) {
+        addEmitBranch(state.isRemovable, state.missLocation, state.missDirection, state.branchLog);
         terminateSpecState(state);
         return;
     }
@@ -3534,6 +3658,7 @@ void Executor::terminateStateOnError(ExecutionState &state,
         const llvm::Twine &info) {
 
     if (state.isSpeculative) {
+        addEmitBranch(false, state.missLocation, state.missDirection, state.branchLog);
         terminateSpecState(state);
         return;
     }

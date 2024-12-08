@@ -145,7 +145,7 @@ public:
 
     // Check if a valid debug location is assigned to the instruction.
     if (dl.get() != nullptr) {
-      auto full_path = dl.get()->getFilename();
+      auto full_path = getFullPath(dl.get()->getDirectory(), dl.get()->getFilename());
       auto line = dl.getLine();
       auto column = dl.getCol();
 

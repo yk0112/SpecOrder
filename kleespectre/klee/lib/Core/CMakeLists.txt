@@ -6,6 +6,8 @@
 # License. See LICENSE.TXT for details.
 #
 #===------------------------------------------------------------------------===#
+find_package(nlohmann_json 3.2.0 REQUIRED)
+
 klee_add_component(kleeCore
   AddressSpace.cpp
   MergeHandler.cpp
@@ -50,4 +52,6 @@ target_link_libraries(kleeCore PRIVATE
   kleaverSolver
   kleaverExpr
   kleeSupport
+  nlohmann_json::nlohmann_json
 )
+
