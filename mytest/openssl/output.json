@@ -1,0 +1,25 @@
+{
+    "branches": [
+        {
+            "location": "/workspace/SpecFuzz/mytest/openssl/md2_dgst.c:138",
+            "truePath": true,
+            "falsePath": true
+        },
+        {
+            "location": "/workspace/SpecFuzz/mytest/openssl/md2_dgst.c:139",
+            "truePath": true,
+            "falsePath": true
+        },
+        {
+            "location": "/workspace/SpecFuzz/mytest/openssl/md2_dgst.c:163",
+            "truePath": true,
+            "falsePath": true
+        },
+        {
+            "location": "/workspace/SpecFuzz/mytest/openssl/md2_dgst.c:113",
+            "truePath": true,
+            "falsePath": true
+        }
+
+    ]
+}

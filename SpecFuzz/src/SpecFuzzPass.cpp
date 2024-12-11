@@ -24,7 +24,9 @@
 ///   * spec: May be executed speculatively
 //===------------------------------------------------------------------------===//
 
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "X86InstrInfo.h"
 #include "X86Subtarget.h"
@@ -35,8 +37,11 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/IR/DebugInfo.h"
+#include <nlohmann/json.hpp>
+#include <string>
 
 using namespace llvm;
+using json = nlohmann::json;
 
 #define PASS_KEY "x86-specfuzz"
 #define PASS_DESCRIPTION "Simulate Spectre v1 (Bounds Check Bypass)"
@@ -75,6 +80,12 @@ static cl::opt<bool> CoverageOnly(  // NOLINT
         "No simulation, only coverage. Inserts calls to specfuzz_cov"),
     cl::init(false), cl::Hidden);
 
+static cl::opt<std::string> PruningList(  // NOLINT
+    PASS_KEY "-pruning-list",
+    cl::desc(
+        "A list of conditional branch instructions that can be pruned"),
+    cl::init(""), cl::Hidden);
+
 namespace llvm {
 
 void initializeX86SpecFuzzPassPass(PassRegistry &);
@@ -92,7 +103,15 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     bool HasExtraSerializationPoints = false;
     std::set<std::string> BranchesToInstrument;
     std::set<std::string> SerializationPoints;
-
+    
+    struct BranchInfo {
+      std::string location;
+      bool truePath;
+      bool falsePath;
+    };
+    std::vector<BranchInfo> PruningBrnch;
+    std::vector<MachineBasicBlock *> PruningBlocks; 
+   
     X86SpecFuzzPass() : MachineFunctionPass(ID) {
         initializeX86SpecFuzzPassPass(*PassRegistry::getPassRegistry());
     }
@@ -132,7 +151,8 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     auto visitIndirectCall(MachineInstr &Call, MachineBasicBlock &Parent) -> bool;
     auto visitASanCall(MachineInstr &MI, MachineBasicBlock &Parent) -> bool;
     auto insertAdditionalCheck(MachineInstr &MI, MachineBasicBlock &Parent, int Offset) -> bool;
-
+    void addPruningPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough);
+    void insertPruningProsess(MachineInstr &MI, MachineBasicBlock &MBB);
     // Simple Coverage sub-pass
     auto coveragePass(MachineFunction &MF) -> bool;
 
@@ -165,6 +185,7 @@ class X86SpecFuzzPass : public MachineFunctionPass {
                          const char *Location);
     auto reverseJump(unsigned int Opcode) -> unsigned;
 
+    auto findBranchInfo(std::string &Location) -> llvm::Optional<BranchInfo>;
     static auto isFirstInFusedPair(MachineInstr &MI) -> bool;
     static auto splitMBBAt(MachineBasicBlock &CurMBB,
                            MachineBasicBlock::iterator SplitAt) -> MachineBasicBlock *;
@@ -173,7 +194,9 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     static auto isExplicitlySerializing(unsigned Opcode) -> bool;
     static auto isPush(unsigned Opcode) -> int;
     static auto getCompleteDebugLocation(DebugLoc &Loc) -> std::string;
+    static auto getDebugLocation(DebugLoc &Loc) -> std::string;
     static void readIntoList(std::string &File, std::set<std::string> *List);
+    void parseJSONFile(std::string &File, std::vector<BranchInfo> *PruningBranch);
 };
 
 } // end of anonymous namespace
@@ -207,6 +230,10 @@ auto X86SpecFuzzPass::runOnMachineFunction(MachineFunction &MF) -> bool {
         // as calls to non-instrumented functions, except recursive calls
         InstrumentedFunctions.insert(MF.getName().str());
     }
+    
+    if (not PruningList.empty()) {
+        parseJSONFile(PruningList, &PruningBrnch);
+    } 
 
     if (not ListsInitialized) {
         if (not BranchList.empty()) {
@@ -233,7 +260,6 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
     // Blacklist functions
     // TBD: implement proper blacklisting
     if (MF.getName().contains("asan")) {
-        DEBUG(dbgs() << "Blacklisted\n");
         return Modified;
     }
 
@@ -249,7 +275,8 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
         std::vector<MachineInstr *> OriginalMIs;
         for (MachineInstr &MI : *MBB)
             OriginalMIs.push_back(&MI);
-
+        
+        bool FirstInstructionInBB = true;
         for (MachineInstr *MI : OriginalMIs) {
             // We ignore virtual instructions
             if (MI->isMetaInstruction())
@@ -259,7 +286,11 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
                 Modified |= visitFunctionEntry(*MI, *MBB);
                 FirstInstructionInFunction = false;
             }
-           
+            
+            if (FirstInstructionInBB && not PruningList.empty()) {
+                insertPruningProsess(*MI, *MBB);
+                FirstInstructionInBB = false;
+            }          
             // Serializing instruction
             if (isSerializingInstruction(*MI)) {
                 Modified |= visitSerializingInstruction(*MI, *MBB);
@@ -286,16 +317,17 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
         }
     }
 
+    // assert(PruningBlocks.empty());
     // Initialize Branch Table
     // This code is intentionally put here, after all other instrumentations so that we
     // avoid interfering with other parts of the pass
     if (MF.getName() == "main") {
-        DEBUG(dbgs() << "Initializing Branch Table\n");
         MachineBasicBlock &FirstMBB = *MF.begin();
         MachineInstr &FirstMI = *FirstMBB.getFirstNonDebugInstr();
         BuildMI(FirstMBB, FirstMI, FirstMI.getDebugLoc(), TII->get(X86::CALLpcrel32))
             .addExternalSymbol("specfuzz_init");
     }
+
 
     return Modified;
 }
@@ -304,7 +336,6 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
 /// functions at runtime
 /// CLOB: spec
 auto X86SpecFuzzPass::visitFunctionEntry(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting function entry: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     // NOPL 0x42(RBX)
@@ -329,8 +360,6 @@ auto X86SpecFuzzPass::visitTerminator(MachineBasicBlock &Parent) -> bool {
         DebugLoc Loc = FirstTerminator.getDebugLoc();
         std::string LocName = getCompleteDebugLocation(Loc);
         if (BranchesToInstrument.count(LocName) == 0) {
-            DEBUG(
-                dbgs() << "Branch is not in the instrumentation list: " << LocName << "\n");
             return visitNonSpeculatableTerminator(FirstTerminator, Parent);
         }
     }
@@ -339,8 +368,6 @@ auto X86SpecFuzzPass::visitTerminator(MachineBasicBlock &Parent) -> bool {
         DebugLoc Loc = FirstTerminator.getDebugLoc();
         std::string LocName = getCompleteDebugLocation(Loc);
         if (SerializationPoints.count(LocName) != 0) {
-            DEBUG(
-                dbgs() << "Branch is marked as patched: " << LocName << "\n");
             addCallRuntimeFunction(Parent, FirstTerminator, Loc, "specfuzz_rlbk_patched");
             return true;
         }
@@ -377,7 +404,6 @@ auto X86SpecFuzzPass::visitSpeculatableTerminator(MachineInstr &FirstJump,
                                                   MachineBasicBlock &Parent,
                                                   MachineInstr *SecondJump,
                                                   MachineInstr *ThirdJump) -> bool {
-    DEBUG(dbgs() << "Instrumenting a conditional branch: " << FirstJump);
     DebugLoc Loc = FirstJump.getDebugLoc();
 
     // Start by finding out the successors of the BB.
@@ -444,15 +470,54 @@ auto X86SpecFuzzPass::visitSpeculatableTerminator(MachineInstr &FirstJump,
     // - Add reversed jumps and a fallthrough
     unsigned ReversedJump = reverseJump(FirstJump.getOpcode());
     BuildMI(&Parent, Loc, TII->get(ReversedJump)).addMBB(FirstJumpTarget);
+    
+    addPruningPosition(FirstJump, *FirstJumpTarget, *FallThroughTarget);
 
     if (SecondJumpTarget) {
         unsigned SecondReversedJump = reverseJump(SecondJump->getOpcode());
         BuildMI(&Parent, Loc, TII->get(SecondReversedJump)).addMBB(SecondJumpTarget);
+        // addPruningPosition(*SecondJump, *SecondJumpTarget, *FallThroughTarget);
     }
 
     BuildMI(&Parent, Loc, TII->get(X86::JMP_1)).addMBB(FallThroughTarget);
 
     return true;
+}
+
+
+void X86SpecFuzzPass::addPruningPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough) {
+    if (PruningList.empty()) return;
+    
+    DebugLoc Loc = MI.getDebugLoc();
+    std::string LocationInfo = getDebugLocation(Loc);
+    llvm::Optional<BranchInfo> Result = findBranchInfo(LocationInfo);
+
+    MachineInstr &TargetFirstMI = *Target.begin();
+    DebugLoc TargetLoc = TargetFirstMI.getDebugLoc();
+
+    MachineInstr &FallThroughFirstMI = *FallThrough.getFirstNonDebugInstr();
+    DebugLoc FallThroughLoc = FallThroughFirstMI.getDebugLoc();
+
+    if (Result) {
+      if(Result->truePath) {
+        PruningBlocks.push_back(&Target);
+        DEBUG(dbgs() << "Pruning: " << LocationInfo);
+      }
+      if(Result->falsePath) {
+        PruningBlocks.push_back(&FallThrough);
+        DEBUG(dbgs() << "Pruning: " << LocationInfo);
+      }
+    }
+}
+
+void X86SpecFuzzPass::insertPruningProsess(MachineInstr &MI, MachineBasicBlock &MBB) {
+    auto It = std::find(PruningBlocks.begin(), PruningBlocks.end(), &MBB);
+    if(It != PruningBlocks.end()) {
+        DebugLoc Loc = MI.getDebugLoc();
+        DEBUG(dbgs() << "This is InsertPruning");
+        addCallRuntimeFunction(MBB, MI, Loc, "specfuzz_rlbk_pruning"); 
+        PruningBlocks.erase(It);
+    }
 }
 
 /// When the BB does not terminate with a conditional branch, it cannot be speculated.
@@ -470,7 +535,6 @@ auto X86SpecFuzzPass::visitNonSpeculatableTerminator(MachineInstr &MI,
     }
 
     DebugLoc Loc = MI.getDebugLoc();
-    DEBUG(dbgs() << "Instrumenting an unconditional terminator: " << MI);
     addCallRuntimeFunction(Parent, MI, Loc, "specfuzz_rlbk_if_done");
     return true;
 }
@@ -484,7 +548,6 @@ auto X86SpecFuzzPass::visitNonSpeculatableTerminator(MachineInstr &MI,
 ///
 /// COND: spec
 auto X86SpecFuzzPass::visitIndirectBranch(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting an indirect branch: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     preserveRegister(Parent, MI, Loc, X86::RDI, "tmp_gpr1");
@@ -521,7 +584,6 @@ auto X86SpecFuzzPass::visitIndirectBranch(MachineInstr &MI, MachineBasicBlock &P
 ///
 /// COND: spec
 auto X86SpecFuzzPass::visitReturn(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting a return: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     preserveRegister(Parent, MI, Loc, X86::RDI, "tmp_gpr1");
@@ -559,7 +621,6 @@ auto X86SpecFuzzPass::visitWrite(MachineInstr &MI, MachineBasicBlock &Parent) ->
     if (isPush(MI.getOpcode()))
         return visitPush(MI, Parent);
 
-    DEBUG(dbgs() << "Instrumenting store: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     const MCInstrDesc &Desc = MI.getDesc();
@@ -597,7 +658,6 @@ auto X86SpecFuzzPass::visitWrite(MachineInstr &MI, MachineBasicBlock &Parent) ->
 
     // SSE stores are 128-bit wide
     if (Desc.TSFlags >> X86II::SSEDomainShift & 3) {  // NOLINT
-        DEBUG(dbgs() << "   The store is 128-bit wide\n");
 
         // LEAQ 8(%TmpReg), %TmpReg
         BuildMI(Parent, MI, Loc, TII->get(X86::LEA64r), TmpReg)
@@ -624,7 +684,6 @@ auto X86SpecFuzzPass::visitWrite(MachineInstr &MI, MachineBasicBlock &Parent) ->
 /// Same as the instrumentation of writes, but the address is always in RSP
 /// CLOB: spec
 auto X86SpecFuzzPass::visitPush(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting a push or call: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     preserveRegister(Parent, MI, Loc, X86::RSP, "current_rsp");
@@ -688,7 +747,6 @@ auto X86SpecFuzzPass::visitInstrumentedCall(MachineInstr &MI, MachineBasicBlock 
 /// Correspondingly, we have to re-enable the simulation after returning from the call
 /// CLOB: spec flags
 auto X86SpecFuzzPass::visitExternalCall(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting a call to an external function: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     addCallRuntimeFunction(Parent, MI, Loc, "specfuzz_rlbk_external_call");
@@ -717,7 +775,6 @@ auto X86SpecFuzzPass::visitExternalCall(MachineInstr &MI, MachineBasicBlock &Par
 ///
 /// TODO: refactor me! plz!
 auto X86SpecFuzzPass::visitIndirectCall(MachineInstr &Call, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting an indirect call: " << Call);
     DebugLoc Loc = Call.getDebugLoc();
 
     // we always stop simulation before indirect calls
@@ -846,7 +903,6 @@ auto X86SpecFuzzPass::visitIndirectCall(MachineInstr &Call, MachineBasicBlock &P
 /// ASan functions must be stack-neutral and thus, we have to switch the stack
 /// CLOB: spec
 auto X86SpecFuzzPass::visitASanCall(MachineInstr &MI, MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting a call to an ASan function: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     // store the stack pointer before the call
@@ -870,7 +926,6 @@ auto X86SpecFuzzPass::visitASanCall(MachineInstr &MI, MachineBasicBlock &Parent)
 /// CLOB: spec
 auto X86SpecFuzzPass::visitSerializingInstruction(MachineInstr &MI,
                                                   MachineBasicBlock &Parent) -> bool {
-    DEBUG(dbgs() << "Instrumenting a serializing instruction: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
     addCallRuntimeFunction(Parent, MI, Loc, "specfuzz_rlbk_serializing");
     return true;
@@ -881,7 +936,6 @@ auto X86SpecFuzzPass::visitSerializingInstruction(MachineInstr &MI,
 auto X86SpecFuzzPass::insertAdditionalCheck(MachineInstr &MI,
                                             MachineBasicBlock &Parent,
                                             int Offset) -> bool {
-    DEBUG(dbgs() << "Adding an additional check into a long BB: " << MI);
     DebugLoc Loc = MI.getDebugLoc();
 
     addCallRuntimeFunction(Parent, MI, Loc, "specfuzz_rlbk_if_done");
@@ -906,7 +960,6 @@ auto X86SpecFuzzPass::coveragePass(MachineFunction &MF) -> bool {
     // Blacklist functions
     // TBD: implement proper blacklisting
     if (MF.getName().contains("asan")) {
-        DEBUG(dbgs() << "Blacklisted\n");
         return Modified;
     }
 
@@ -921,14 +974,12 @@ auto X86SpecFuzzPass::coveragePass(MachineFunction &MF) -> bool {
                 // Skip instrumentation in these cases
                 if (MI.getPrevNode() && MI.getPrevNode()->getOpcode() == X86::UCOMISDrr &&
                     std::distance(MBB.terminators().begin(), MBB.terminators().end()) == 2) {
-                    DEBUG(dbgs() << "Skipping as a bug workaround: " << MI);
                     break;
                 }
                 Conditionals.push_back(&MI);
             }
 
     for (MachineInstr *MI : Conditionals) {
-        DEBUG(dbgs() << "Adding coverage call to " << *MI);
         BuildMI(*MI->getParent(), MI, MI->getDebugLoc(), TII->get(X86::CALLpcrel32))
             .addExternalSymbol("specfuzz_cov_trace_pc_wrapper");
         Modified = true;
@@ -1196,6 +1247,18 @@ auto X86SpecFuzzPass::getCompleteDebugLocation(DebugLoc &Loc) -> std::string {
     LocName.append(std::to_string(Loc.getLine()));
     LocName.append(":");
     LocName.append(std::to_string(Loc.getCol()));
+    return LocName;
+}
+
+auto X86SpecFuzzPass::getDebugLocation(DebugLoc &Loc) -> std::string {
+    if (!Loc)
+        return "";
+
+    std::string LocName = cast<DIScope>(Loc.getScope())->getDirectory();
+    LocName.append("/");
+    LocName.append(cast<DIScope>(Loc.getScope())->getFilename().str());
+    LocName.append(":");
+    LocName.append(std::to_string(Loc.getLine()));
     return LocName;
 }
 
@@ -1634,6 +1697,30 @@ void X86SpecFuzzPass::readIntoList(std::string &File, std::set<std::string> *Lis
         if (line.empty()) continue;
         List->insert(line);
     }
+}
+
+void X86SpecFuzzPass::parseJSONFile(std::string &File, std::vector<BranchInfo> *PruningBranch) {
+    std::ifstream file(File);
+    json j;
+    file >> j;
+
+    for (const auto& branch : j["branches"]) {
+        BranchInfo info;
+        info.location = branch["location"].get<std::string>();
+        info.truePath = branch["truePath"].get<bool>();
+        info.falsePath = branch["falsePath"].get<bool>();
+
+        PruningBrnch.push_back(info);
+    }
+}
+
+llvm::Optional<X86SpecFuzzPass::BranchInfo> X86SpecFuzzPass::findBranchInfo(std::string &Location) {
+    for (const auto& branch : PruningBrnch) {
+        if (branch.location == Location) {
+            return branch;  
+        }
+    }
+    return llvm::None;
 }
 
 INITIALIZE_PASS_BEGIN(X86SpecFuzzPass, DEBUG_TYPE, PASS_DESCRIPTION, false, false)

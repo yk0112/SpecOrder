@@ -55,6 +55,9 @@
 // and all checkpointed values on the same page
 .align 4096
 
+.globl debug_msg
+debug_msg: .asciz "Debug Point\n"
+
 // Instruction counter: counts instructions executed during a simulation
 .globl instruction_counter
 instruction_counter:    .quad   0
@@ -194,6 +197,15 @@ debug_rollback_depth:                   .string     "[SF] rlbk: 0x%llx %lld %lld
 // Checkpoint and rollback
 //===------------------------------------------------------------------------===//
 .text
+
+.section .text
+.global debug_info
+.type debug_info, @function
+
+debug_info:
+    leaq debug_msg(%rip), %rdi
+    call puts       
+    ret
 
 /// specfuzz_chkp: Make a checkpoint
 /// Stores:
@@ -452,6 +464,19 @@ specfuzz_rlbk_serializing:
 specfuzz_rlbk_patched:
     STAT_INCREMENT stat_forced_patched
     jmp specfuzz_rlbk_forced
+
+/// specfuzz_rlbk_pruning: 枝刈り可能な分岐方向の場合、ロールバック
+.globl	specfuzz_rlbk_pruning
+.type	specfuzz_rlbk_pruning, @function
+specfuzz_rlbk_pruning:
+    pushfq
+    cmpq $1, nesting_level
+    jne specfuzz_soon.return   
+    callq specfuzz_rlbk
+
+specfuzz_soon.return:
+  popfq
+  ret
 
 
 /// specfuzz_rlbk: The rollback routine
