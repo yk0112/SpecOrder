@@ -244,6 +244,8 @@ private:
 
   /* SPSE begin */
   
+  void addBranchLog(ExecutionState &State);
+  void dumpBranchLog();
   /// whether the speculative execution is enable
   /// default is false
   bool ispecEnabled;
@@ -263,13 +265,21 @@ private:
     std::string location;
     bool truePath;
     bool falsePath;
-  } BranchInfo;
+  } PruningBranchInfo;
 
-  std::vector<BranchInfo> branches;
+  std::vector<PruningBranchInfo> PruningBranches;
+
+  typedef struct {
+    std::string location;
+    int truePathCount;
+    int falsePathCount;
+  } BranchDirection;
+
+  std::vector<BranchDirection> BranchesLog;
 
   void dumpEmitBranch();
   
-  void addEmitBranch(bool isRemovable, const std::string& location, bool direction, std::string branchLog);
+  void addEmitBranch(bool isRemovable, const std::string& location, bool direction);
   /* SPSP end */
 
   llvm::Function* getTargetFunction(llvm::Value *calledVal,

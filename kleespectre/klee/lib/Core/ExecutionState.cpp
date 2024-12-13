@@ -91,7 +91,7 @@ ExecutionState::ExecutionState(KFunction *kf) :
     missLocation(""),
     missDirection(false),
     isRemovable(true),
-    branchLog(""),
+    branchLog(),
     pSpecState(0)
 
 

@@ -174,7 +174,7 @@ public:
 
   bool isRemovable;
 
-  std::string branchLog;
+  std::set<std::string> branchLog;
   /// State tag
   uint64_t tag;
 
