@@ -3336,6 +3336,7 @@ void Executor::addBranchLog(ExecutionState &State) {
             newBranchLog.falsePathCount = (direction == "false") ? 1 : 0;
             BranchesLog.push_back(newBranchLog);
         }
+    BranchesLogSum++;
     }
 }
 
@@ -3360,14 +3361,21 @@ void Executor::dumpEmitBranch() {
     file.close();
 }
 
+double round(double value, int places) {
+    double scale = std::pow(10.0, places);
+    return std::round(value * scale) / scale;
+}
+
+
 void Executor::dumpBranchLog() {
     json output;
-    
+    double Sum = static_cast<double>(BranchesLogSum);
+  
     for (const auto& branchLog : BranchesLog) {
         json branch_json;
         branch_json["location"] = branchLog.location;
-        branch_json["truePathCount"] = branchLog.truePathCount;
-        branch_json["falsePathCount"] = branchLog.falsePathCount;
+        branch_json["truePathCount"] = round(branchLog.truePathCount / Sum, 3);
+        branch_json["falsePathCount"] = round(branchLog.falsePathCount / Sum, 3);
         output["branches"].push_back(branch_json);
     }
     

@@ -277,6 +277,8 @@ private:
 
   std::vector<BranchDirection> BranchesLog;
 
+  long long BranchesLogSum = 0; 
+
   void dumpEmitBranch();
   
   void addEmitBranch(bool isRemovable, const std::string& location, bool direction);
