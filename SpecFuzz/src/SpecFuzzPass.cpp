@@ -39,6 +39,7 @@
 #include "llvm/IR/DebugInfo.h"
 #include <nlohmann/json.hpp>
 #include <string>
+#include <tuple>
 
 using namespace llvm;
 using json = nlohmann::json;
@@ -86,6 +87,12 @@ static cl::opt<std::string> PruningList(  // NOLINT
         "A list of conditional branch instructions that can be pruned"),
     cl::init(""), cl::Hidden);
 
+static cl::opt<std::string> BranchLog(  // NOLINT
+    PASS_KEY "-branch-log",
+    cl::desc(
+        "Percentage of conditional branch directions for scoring"),
+    cl::init(""), cl::Hidden);
+
 namespace llvm {
 
 void initializeX86SpecFuzzPassPass(PassRegistry &);
@@ -104,14 +111,27 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     std::set<std::string> BranchesToInstrument;
     std::set<std::string> SerializationPoints;
     
-    struct BranchInfo {
+    struct PruningBrInfo {
       std::string location;
       bool truePath;
       bool falsePath;
     };
-    std::vector<BranchInfo> PruningBrnch;
+    std::vector<PruningBrInfo> PruningBrnch;
     std::vector<MachineBasicBlock *> PruningBlocks; 
-   
+
+    struct BranchScore {
+      std::string location;
+      int truePath;
+      int falsePath;
+      int trueSpPath;
+      int falseSpPath;
+    };
+    std::vector<BranchScore> BranchScores; 
+    std::unordered_map<MachineBasicBlock*, std::pair<int,int>> ScoringBlocks;
+    
+    std::unordered_map<std::string, int> BranchIndices;
+    int CurrentIndex = 0;
+
     X86SpecFuzzPass() : MachineFunctionPass(ID) {
         initializeX86SpecFuzzPassPass(*PassRegistry::getPassRegistry());
     }
@@ -153,6 +173,8 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     auto insertAdditionalCheck(MachineInstr &MI, MachineBasicBlock &Parent, int Offset) -> bool;
     void addPruningPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough);
     void insertPruningProsess(MachineInstr &MI, MachineBasicBlock &MBB);
+    void addScoringPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough);
+    void insertScoringProsess(MachineInstr &MI, MachineBasicBlock &MBB);
     // Simple Coverage sub-pass
     auto coveragePass(MachineFunction &MF) -> bool;
 
@@ -163,6 +185,10 @@ class X86SpecFuzzPass : public MachineFunctionPass {
                                 MachineInstr &MI,
                                 DebugLoc &Loc,
                                 const char *FunctionName);
+    void addCallScoringFunc(MachineBasicBlock &MBB,
+                            MachineInstr &MI,
+                            DebugLoc &Loc,
+                            double Arg);
     void preserveRegister(MachineBasicBlock &Parent,
                           MachineInstr &InsertBefore,
                           DebugLoc &DL,
@@ -185,7 +211,8 @@ class X86SpecFuzzPass : public MachineFunctionPass {
                          const char *Location);
     auto reverseJump(unsigned int Opcode) -> unsigned;
 
-    auto findBranchInfo(std::string &Location) -> llvm::Optional<BranchInfo>;
+    auto findPruningBranch(std::string &Location) -> llvm::Optional<PruningBrInfo>;
+    auto findScoringBranch(std::string &Location) -> llvm::Optional<BranchScore>; 
     static auto isFirstInFusedPair(MachineInstr &MI) -> bool;
     static auto splitMBBAt(MachineBasicBlock &CurMBB,
                            MachineBasicBlock::iterator SplitAt) -> MachineBasicBlock *;
@@ -196,7 +223,8 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     static auto getCompleteDebugLocation(DebugLoc &Loc) -> std::string;
     static auto getDebugLocation(DebugLoc &Loc) -> std::string;
     static void readIntoList(std::string &File, std::set<std::string> *List);
-    void parseJSONFile(std::string &File, std::vector<BranchInfo> *PruningBranch);
+    void parsePruningFile(std::string &File, std::vector<PruningBrInfo> *PruningBranch);
+    void parseBranchLogFile(std::string &File, std::vector<BranchScore> *BranchScores);
 };
 
 } // end of anonymous namespace
@@ -232,9 +260,13 @@ auto X86SpecFuzzPass::runOnMachineFunction(MachineFunction &MF) -> bool {
     }
     
     if (not PruningList.empty()) {
-        parseJSONFile(PruningList, &PruningBrnch);
+        parsePruningFile(PruningList, &PruningBrnch);
     } 
-
+    
+    if (not BranchLog.empty()) {
+        parseBranchLogFile(BranchLog, &BranchScores);
+    } 
+    
     if (not ListsInitialized) {
         if (not BranchList.empty()) {
             SelectiveInstrumentation = true;
@@ -287,8 +319,9 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
                 FirstInstructionInFunction = false;
             }
             
-            if (FirstInstructionInBB && not PruningList.empty()) {
-                insertPruningProsess(*MI, *MBB);
+            if (FirstInstructionInBB) {
+                if (not PruningList.empty()) insertPruningProsess(*MI, *MBB);
+                if (not BranchLog.empty()) insertScoringProsess(*MI, *MBB);
                 FirstInstructionInBB = false;
             }          
             // Serializing instruction
@@ -316,7 +349,8 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
             }
         }
     }
-
+    
+    assert(ScoringBlocks.empty());
     // assert(PruningBlocks.empty());
     // Initialize Branch Table
     // This code is intentionally put here, after all other instrumentations so that we
@@ -327,7 +361,7 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
         BuildMI(FirstMBB, FirstMI, FirstMI.getDebugLoc(), TII->get(X86::CALLpcrel32))
             .addExternalSymbol("specfuzz_init");
     }
-
+  
 
     return Modified;
 }
@@ -473,6 +507,8 @@ auto X86SpecFuzzPass::visitSpeculatableTerminator(MachineInstr &FirstJump,
     
     addPruningPosition(FirstJump, *FirstJumpTarget, *FallThroughTarget);
 
+    addScoringPosition(FirstJump, *FirstJumpTarget, *FallThroughTarget);
+    
     if (SecondJumpTarget) {
         unsigned SecondReversedJump = reverseJump(SecondJump->getOpcode());
         BuildMI(&Parent, Loc, TII->get(SecondReversedJump)).addMBB(SecondJumpTarget);
@@ -485,12 +521,80 @@ auto X86SpecFuzzPass::visitSpeculatableTerminator(MachineInstr &FirstJump,
 }
 
 
+void X86SpecFuzzPass::addScoringPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough) {
+    if(BranchLog.empty()) return;
+
+    DebugLoc Loc = MI.getDebugLoc();
+    std::string LocationInfo = getDebugLocation(Loc);
+    llvm::Optional<BranchScore> Result = findScoringBranch(LocationInfo);
+    
+    int TrueIndex, TrueSpIndex, FalseIndex, FalseSpIndex = -1; 
+    
+    if(!Result) return;
+
+    if (Result->truePath != 0 || Result->trueSpPath != 0) {
+        if(Result->truePath != 0) {
+          TrueIndex = CurrentIndex; 
+          CurrentIndex++;
+        }
+        if(Result->trueSpPath != 0) {
+          TrueSpIndex = CurrentIndex;
+          CurrentIndex++;
+        }
+        ScoringBlocks[&Target] = {TrueIndex, TrueSpIndex};
+    }
+    if (Result->falsePath != 0 || Result->falseSpPath != 0) {
+        if(Result->falsePath != 0) {
+          FalseIndex = CurrentIndex;
+          CurrentIndex++;
+        }
+        if(Result->falseSpPath != 0) {
+          FalseSpIndex = CurrentIndex;
+          CurrentIndex++;
+        }
+        ScoringBlocks[&FallThrough] = {FalseIndex, FalseSpIndex};
+    }
+}
+
+void X86SpecFuzzPass::insertScoringProsess(MachineInstr &MI, MachineBasicBlock &MBB) {
+    auto It = ScoringBlocks.find(&MBB);
+    if(It != ScoringBlocks.end()) {
+        DebugLoc Loc = MI.getDebugLoc();
+
+        std::string LocationInfo = getDebugLocation(Loc);
+    
+    BuildMI(MBB, MI, Loc, TII->get(X86::MOV64mr))
+        .addReg(0).addImm(1)
+        .addReg(0).addExternalSymbol("current_rsp")
+        .addReg(0)
+        .addReg(X86::RSP);
+    BuildMI(MBB, MI, Loc, TII->get(X86::LEA64r))
+        .addReg(X86::RSP)
+        .addReg(0).addImm(1)
+        .addReg(0).addExternalSymbol("specfuzz_rtl_frame")
+        .addReg(0);
+    BuildMI(MBB, MI, Loc, TII->get(X86::MOV64ri), X86::RDI) // 第1引数
+        .addImm(It->second.first);
+    BuildMI(MBB, MI, Loc, TII->get(X86::MOV64ri), X86::RSI) // 第2引数
+        .addImm(It->second.second);   
+    BuildMI(MBB, MI, Loc, TII->get(X86::CALLpcrel32))
+        .addExternalSymbol("specfuzz_recordBr");
+    BuildMI(MBB, MI, Loc, TII->get(X86::MOV64rm))
+        .addReg(X86::RSP)
+        .addReg(0).addImm(1)
+        .addReg(0).addExternalSymbol("current_rsp")
+        .addReg(0);
+
+        ScoringBlocks.erase(It);
+    }
+}
+
 void X86SpecFuzzPass::addPruningPosition(MachineInstr &MI, MachineBasicBlock &Target, MachineBasicBlock &FallThrough) {
     if (PruningList.empty()) return;
     
     DebugLoc Loc = MI.getDebugLoc();
     std::string LocationInfo = getDebugLocation(Loc);
-    llvm::Optional<BranchInfo> Result = findBranchInfo(LocationInfo);
+    llvm::Optional<PruningBrInfo> Result = findPruningBranch(LocationInfo);
 
     MachineInstr &TargetFirstMI = *Target.begin();
     DebugLoc TargetLoc = TargetFirstMI.getDebugLoc();
@@ -1699,13 +1803,13 @@ void X86SpecFuzzPass::readIntoList(std::string &File, std::set<std::string> *Lis
     }
 }
 
-void X86SpecFuzzPass::parseJSONFile(std::string &File, std::vector<BranchInfo> *PruningBranch) {
+void X86SpecFuzzPass::parsePruningFile(std::string &File, std::vector<PruningBrInfo> *PruningBranch) {
     std::ifstream file(File);
     json j;
     file >> j;
 
     for (const auto& branch : j["branches"]) {
-        BranchInfo info;
+        PruningBrInfo info;
         info.location = branch["location"].get<std::string>();
         info.truePath = branch["truePath"].get<bool>();
         info.falsePath = branch["falsePath"].get<bool>();
@@ -1714,7 +1818,7 @@ void X86SpecFuzzPass::parseJSONFile(std::string &File, std::vector<BranchInfo> *
     }
 }
 
-llvm::Optional<X86SpecFuzzPass::BranchInfo> X86SpecFuzzPass::findBranchInfo(std::string &Location) {
+llvm::Optional<X86SpecFuzzPass::PruningBrInfo> X86SpecFuzzPass::findPruningBranch(std::string &Location) {
     for (const auto& branch : PruningBrnch) {
         if (branch.location == Location) {
             return branch;  
@@ -1722,6 +1826,32 @@ llvm::Optional<X86SpecFuzzPass::BranchInfo> X86SpecFuzzPass::findBranchInfo(std:
     }
     return llvm::None;
 }
+
+llvm::Optional<X86SpecFuzzPass::BranchScore> X86SpecFuzzPass::findScoringBranch(std::string &Location) {
+    for (const auto& branch : BranchScores) {
+        if (branch.location == Location) {
+            return branch;  
+        }
+    }
+    return llvm::None;
+}
+
+void X86SpecFuzzPass::parseBranchLogFile(std::string &File, std::vector<BranchScore> *BranchScores) {
+    std::ifstream file(File);
+    json j;
+    file >> j;
+
+    for (const auto& branch : j["branches"]) {
+        BranchScore info;
+        info.location = branch["location"].get<std::string>();
+        info.truePath = branch["truePath"].get<int>();
+        info.falsePath = branch["falsePath"].get<int>();
+        info.trueSpPath = branch["trueSpPath"].get<int>();
+        info.falseSpPath = branch["falseSpPath"].get<int>();
+        BranchScores->push_back(info);
+    }
+}
+
 
 INITIALIZE_PASS_BEGIN(X86SpecFuzzPass, DEBUG_TYPE, PASS_DESCRIPTION, false, false)
 INITIALIZE_PASS_END(X86SpecFuzzPass, DEBUG_TYPE, PASS_DESCRIPTION, false, false)

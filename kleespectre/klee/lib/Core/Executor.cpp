@@ -1126,8 +1126,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
        if (current.specBranchCount < SpeculativeOrder) {
         ExecutionState *spTrueState = &current;
         spTrueState = current.specBranch(maxSEW);        
-        
-        spTrueState->branchLog.insert(file + ":" + lineNum + ":false");
+        // path:lineNum:direction:isSpec 
+        spTrueState->branchLog.insert(file + ":" + lineNum + ":false:true");
         
         if (current.specBranchCount == 0) {
             spTrueState->missLocation =  file + ":" + lineNum;
@@ -1164,7 +1164,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         current.pathOS << "1";
       }
     }
-    current.branchLog.insert(file + ":" + lineNum + ":true");
+    current.branchLog.insert(file + ":" + lineNum + ":true:false");
     
     return StatePair(&current, 0);
   } else if (res==Solver::False) {
@@ -1174,7 +1174,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         ExecutionState *spFalseState = &current;
         spFalseState = current.specBranch(maxSEW);        
 
-        spFalseState->branchLog.insert(file + ":" + lineNum + ":true");
+        spFalseState->branchLog.insert(file + ":" + lineNum + ":true:true");
         
         if (current.specBranchCount == 0) {
             spFalseState->missLocation =  file + ":" + lineNum;
@@ -1210,7 +1210,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         current.pathOS << "0";
       }
     }
-    current.branchLog.insert(file + ":" + lineNum + ":false");
+    current.branchLog.insert(file + ":" + lineNum + ":false:false");
     
     return StatePair(0, &current);
   } else {
@@ -1241,8 +1241,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
         spTrueState = trueState->specBranch(maxSEW);        
         spFalseState = falseState->specBranch(maxSEW);        
 
-        spTrueState->branchLog.insert(file + ":" + lineNum + ":false");
-        spFalseState->branchLog.insert(file + ":" + lineNum + ":true");
+        spTrueState->branchLog.insert(file + ":" + lineNum + ":false:true");
+        spFalseState->branchLog.insert(file + ":" + lineNum + ":true:true");
 
         if (current.specBranchCount == 0) {
             spTrueState->missLocation =  file + ":" + lineNum;
@@ -1396,8 +1396,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       return StatePair(0, 0);
     } 
     
-    trueState->branchLog.insert(file + ":" + lineNum + ":true");
-    falseState->branchLog.insert(file + ":" + lineNum + ":false");
+    trueState->branchLog.insert(file + ":" + lineNum + ":true:false");
+    falseState->branchLog.insert(file + ":" + lineNum + ":false:false");
 
     return StatePair(trueState, falseState);
   }
@@ -3314,17 +3314,39 @@ void Executor::addEmitBranch(bool isRemovable, const std::string& location, bool
 
 void Executor::addBranchLog(ExecutionState &State) {
     std::string location, direction;
-  
+    bool isSpec;
     for (auto& branch : State.branchLog) {
-        size_t pos = branch.rfind(':'); 
-        location = branch.substr(0, pos);       
-        direction = branch.substr(pos+1);       
-        
+        size_t lastColon = branch.rfind(':');
+        size_t secondLastColon = branch.rfind(':', lastColon - 1);
+         
+        location = branch.substr(0, secondLastColon);       
+        direction = branch.substr(secondLastColon + 1, lastColon - secondLastColon - 1);       
+        std::string isSpecStr = branch.substr(lastColon + 1);
+        isSpec = (isSpecStr == "true");
+
         bool found = false;
         for (auto& branchLog : BranchesLog) {
             if (branchLog.location == location) {
-                if(direction == "true") branchLog.truePathCount++;
-                else branchLog.falsePathCount++;
+                if(isSpec) {
+                  if(direction == "true" && branchLog.trueSpPathCount == 0) {
+                      branchLog.trueSpPathCount = 1;
+                      BranchesLogSum++;
+                  }
+                  else if(direction == "false" && branchLog.falseSpPathCount == 0) {
+                      branchLog.falseSpPathCount = 1;
+                      BranchesLogSum++;
+                  }
+                }
+                else {
+                  if(direction == "true" && branchLog.truePathCount == 0) {
+                      branchLog.truePathCount = 1;
+                      BranchesLogSum++;
+                  }
+                  else if(direction == "false" && branchLog.falsePathCount == 0) {
+                      branchLog.falsePathCount = 1;
+                      BranchesLogSum++;
+                  }
+                }
                 found = true;
                 break;
             }
@@ -3332,11 +3354,21 @@ void Executor::addBranchLog(ExecutionState &State) {
         if (!found) {
             BranchDirection newBranchLog;
             newBranchLog.location = location;
-            newBranchLog.truePathCount = (direction == "true") ? 1 : 0;
-            newBranchLog.falsePathCount = (direction == "false") ? 1 : 0;
+            if (isSpec) {
+                newBranchLog.trueSpPathCount = (direction == "true") ? 1 : 0;
+                newBranchLog.falseSpPathCount = (direction == "false") ? 1 : 0;
+                newBranchLog.truePathCount = 0;
+                newBranchLog.falsePathCount = 0; 
+            }
+            else {
+                newBranchLog.trueSpPathCount = 0;
+                newBranchLog.falseSpPathCount = 0;
+                newBranchLog.truePathCount = (direction == "true") ? 1 : 0;
+                newBranchLog.falsePathCount = (direction == "false") ? 1 : 0;
+            }
+            BranchesLogSum++;
             BranchesLog.push_back(newBranchLog);
         }
-    BranchesLogSum++;
     }
 }
 
@@ -3361,24 +3393,36 @@ void Executor::dumpEmitBranch() {
     file.close();
 }
 
-double round(double value, int places) {
-    double scale = std::pow(10.0, places);
-    return std::round(value * scale) / scale;
-}
-
+// double round(double value, int places) {
+//     double scale = std::pow(10.0, places);
+//     return std::round(value * scale) / scale;
+// }
 
 void Executor::dumpBranchLog() {
     json output;
-    double Sum = static_cast<double>(BranchesLogSum);
+    // double Sum = static_cast<double>(BranchesLogSum);
   
     for (const auto& branchLog : BranchesLog) {
         json branch_json;
+        // double truePathScore = (branchLog.truePathCount / Sum) * 100.0;
+        // double falsePathScore = (branchLog.falsePathCount / Sum) * 100.0;
+        // double trueSpPathScore = (branchLog.trueSpPathCount / Sum) * 100.0;
+        // double falseSpPathScore = (branchLog.falseSpPathCount / Sum) * 100.0;
         branch_json["location"] = branchLog.location;
-        branch_json["truePathCount"] = round(branchLog.truePathCount / Sum, 3);
-        branch_json["falsePathCount"] = round(branchLog.falsePathCount / Sum, 3);
+        // branch_json["truePathScore"] = static_cast<int>(std::round(truePathScore));
+        // branch_json["falsePathScore"] = static_cast<int>(std::round(falsePathScore));
+        // branch_json["trueSpPathScore"] = static_cast<int>(std::round(trueSpPathScore));
+        // branch_json["falseSpPathScore"] = static_cast<int>(std::round(falseSpPathScore));
+        branch_json["truePath"] = branchLog.truePathCount; 
+        branch_json["falsePath"] = branchLog.falsePathCount;
+        branch_json["trueSpPath"] = branchLog.trueSpPathCount;
+        branch_json["falseSpPath"] = branchLog.falseSpPathCount;
+
         output["branches"].push_back(branch_json);
     }
     
+    output["Sum"] = BranchesLogSum;
+  
     std::ofstream file("BranchesLog.json");
     if (!file.is_open()) {
         std::cerr << "cannot open file" << std::endl;

@@ -34,9 +34,21 @@ char signal_stack[SIGSTKSZ];
 // a global variable for detecting errors in RTL
 char inside_handler = 0;
 
+#define MAX_BRANCHES 300
+uint8_t branchBitmap[MAX_BRANCHES] = {0};
+
 // output buffer
 #define OUTPUT_SIZE 1000000
 char output[OUTPUT_SIZE];
+
+FILE *logFile = NULL;
+
+void specfuzz_branch_fb() {
+  int Sum = 0;
+  for (int i = 0; i < MAX_BRANCHES; i++) Sum += branchBitmap[i]; 
+  fprintf(logFile, "Count: %d\n", Sum);
+  fclose(logFile);
+}
 
 /// Signal handler to catch exceptions on simulated paths
 ///
@@ -50,6 +62,7 @@ void specfuzz_handler(int signo, siginfo_t *siginfo, void *ucontext) {
         fprintf(stderr, "\n[SF] Error: Fault inside the signal handler\n");
         fprintf(stderr, "Instruction at RIP: 0x%llx\n", instruction);
         fprintf(stderr, "Signal number: %d\n", signo);
+        specfuzz_hello();
         abort();
     }
     inside_handler = 1;
@@ -58,6 +71,7 @@ void specfuzz_handler(int signo, siginfo_t *siginfo, void *ucontext) {
         fprintf(stderr, "[SF] Error: Signal handler called outside speculation\n");
         fprintf(stderr, "Instruction at RIP: 0x%llx\n", instruction);
         fprintf(stderr, "Signal number: %d\n", signo);
+        specfuzz_hello();
         abort();
     }
 
@@ -65,6 +79,7 @@ void specfuzz_handler(int signo, siginfo_t *siginfo, void *ucontext) {
         fprintf(stderr, "[SF] Error: checkpoint_sp is corrupted\n");
         fprintf(stderr, "Instruction at RIP: 0x%llx\n", instruction);
         fprintf(stderr, "Signal number: %d\n", signo);
+        specfuzz_hello();
         abort();
     }
 
@@ -73,6 +88,7 @@ void specfuzz_handler(int signo, siginfo_t *siginfo, void *ucontext) {
         fprintf(stderr, "[SF] Error: a signal caught within the SpecFuzz runtime\n");
         fprintf(stderr, "Instruction at RIP: 0x%llx\n", instruction);
         fprintf(stderr, "Signal number: %d\n", signo);
+        specfuzz_hello();
         abort();
     }
 #endif
@@ -172,6 +188,14 @@ void specfuzz_dump_stats() {
     fprintf(stderr, "  Skipped CMP due to disabled simulation: %lu\n", stat_skiped_due_to_disabled);
 }
 
+
+void specfuzz_recordBr(int Index, int SpecIndex) {
+    int TargetIndex = isReverse ? SpecIndex : Index;
+    if (0 <= TargetIndex && TargetIndex < MAX_BRANCHES) {
+        branchBitmap[TargetIndex] = 1;
+    }
+}
+
 /// The initialization function. Called before main
 ///
 __attribute__((preserve_most))
@@ -180,6 +204,8 @@ void specfuzz_init() {
     setvbuf(stderr, output, _IOLBF, OUTPUT_SIZE);
     fprintf(stderr, "[SF] Starting\n");
     setup_handler();
+    logFile = fopen("terminate.log", "a");
+    atexit(specfuzz_branch_fb);
 #if ENABLE_STATS == 1
     atexit(specfuzz_dump_stats);
 #endif
