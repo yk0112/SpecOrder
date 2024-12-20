@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <math.h>
 
 #include "honggfuzz.h"
 #include "libhfcommon/common.h"
@@ -97,6 +98,12 @@ void specfuzz_cov_vuln(uintptr_t pc) {
         ATOMIC_PRE_INC_RELAXED(feedback->pidFeedbackPc[my_thread_no]);
         feedback->vulnMap[index] = 1U;
     }
+}
+
+void specfuzz_scoring(int count, int sum) {
+  int Score = 0;
+  if (sum != 0) Score = (int)(round((double)count / sum * 10));
+  feedback->myScore = Score == 0 ? 1 : Score;
 }
 
 __attribute__((preserve_most))

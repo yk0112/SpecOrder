@@ -66,6 +66,13 @@ instruction_counter:    .quad   0
 .globl nesting_level
 nesting_level:          .quad   0
 
+
+.globl isReverse
+isReverse:          .quad   0
+
+.globl BranchKindsNum
+BranchKindsNum:       .quad 0
+
 // [Prioritized simulation] The maximum order of simulation for the current branch
 max_nesting_level:      .quad   1
 
@@ -365,13 +372,15 @@ specfuzz_chkp:
         // the next instruction, we'll also skip  the restoration to the application stack.
         // Thus, we have to do it here
         movq current_rsp, %rsp
-
+        
+        movq $1, isReverse
         // Return
         jmpq *simulation_start_address
 
 specfuzz_chkp.no_simulation:
     popfq
     popq %r15
+    movq $0, isReverse
     ret
 
 specfuzz_chkp.disabled_simulation:
@@ -585,6 +594,7 @@ specfuzz_rlbk:
     pushq tmp_eflags
     popfq
 
+    movq $0, isReverse
     ret  // Finish the simulation
 
 

@@ -156,6 +156,7 @@ typedef enum {
 struct dynfile_t {
     uint8_t* data;
     size_t size;
+    int score;          //for my Metrics
     TAILQ_ENTRY(dynfile_t)
     pointers;
 };
@@ -197,6 +198,7 @@ typedef struct {
     uint64_t pidFeedbackPc[_HF_THREAD_MAX];
     uint64_t pidFeedbackEdge[_HF_THREAD_MAX];
     uint64_t pidFeedbackCmp[_HF_THREAD_MAX];
+    int myScore; // for my metrics
 } feedback_t;
 
 typedef struct {
@@ -349,6 +351,8 @@ typedef struct {
     bool mainWorker;
     unsigned mutationsPerRun;
     struct dynfile_t* dynfileqCurrent;
+    int CurrentqIteration;    // for my Metrics
+    int maxScore;    // for my Metrics
     uint8_t* dynamicFile;
     size_t dynamicFileSz;
     int dynamicFileFd;

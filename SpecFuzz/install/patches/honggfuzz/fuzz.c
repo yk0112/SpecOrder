@@ -111,11 +111,13 @@ static bool fuzz_writeCovFile(const char* dir, const uint8_t* data, size_t len) 
 
 static void fuzz_addFileToFileQ(honggfuzz_t* hfuzz, const uint8_t* data, size_t len) {
     ATOMIC_SET(hfuzz->timing.lastCovUpdate, time(NULL));
-
+    
     struct dynfile_t* dynfile = (struct dynfile_t*)util_Malloc(sizeof(struct dynfile_t));
     dynfile->size = len;
+    dynfile->score = hfuzz->feedback.feedbackMap->myScore;
     dynfile->data = (uint8_t*)util_Malloc(len);
     memcpy(dynfile->data, data, len);
+
 
     MX_SCOPED_RWLOCK_WRITE(&hfuzz->io.dynfileq_mutex);
     TAILQ_INSERT_TAIL(&hfuzz->io.dynfileq, dynfile, pointers);
@@ -210,15 +212,20 @@ static void fuzz_perfFeedback(run_t* run) {
 
     int64_t diff0 = run->global->linux.hwCnts.cpuInstrCnt - run->linux.hwCnts.cpuInstrCnt;
     int64_t diff1 = run->global->linux.hwCnts.cpuBranchCnt - run->linux.hwCnts.cpuBranchCnt;
-
+    int score = run->global->feedback.feedbackMap->myScore;
+     
     /* Any increase in coverage (edge, pc, cmp, hw) counters forces adding input to the corpus */
     if (run->linux.hwCnts.newBBCnt > 0 || softCntPc > 0 || softCntEdge > 0 || softCntCmp > 0 ||
-        diff0 < 0 || diff1 < 0) {
+        diff0 < 0 || diff1 < 0 || score > run->maxScore) {
         if (diff0 < 0) {
             run->global->linux.hwCnts.cpuInstrCnt = run->linux.hwCnts.cpuInstrCnt;
         }
         if (diff1 < 0) {
             run->global->linux.hwCnts.cpuBranchCnt = run->linux.hwCnts.cpuBranchCnt;
+        }
+        // for my metrics
+        if (score > run->maxScore) {
+            run->maxScore = score;
         }
         run->global->linux.hwCnts.bbCnt += run->linux.hwCnts.newBBCnt;
         run->global->linux.hwCnts.softCntPc += softCntPc;
@@ -508,6 +515,8 @@ static void* fuzz_threadNew(void* arg) {
         .pid = 0,
         .dynfileqCurrent = NULL,
         .dynamicFile = NULL,
+        .CurrentqIteration = 1,
+        .maxScore = 1,         
         .dynamicFileFd = -1,
         .fuzzNo = fuzzNo,
         .persistentSock = -1,

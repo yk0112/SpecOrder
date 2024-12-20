@@ -38,6 +38,8 @@ extern uint64_t stat_corrupted_code_pointer;
 extern uint64_t stat_signal_misc;
 extern uint64_t stat_simulation_disables;
 extern uint64_t stat_skiped_due_to_disabled;
+extern uint64_t isReverse;
+extern uint64_t BranchKindsNum;
 
 extern void specfuzz_rlbk_forced(void);
 
@@ -49,6 +51,8 @@ __attribute__((weak))
 void specfuzz_cov_vuln(uintptr_t pc);
 __attribute__((weak)) __attribute__((preserve_most))
 struct map_entry_t *get_hash_map_entry(uintptr_t pc);
-
+// for feedback seed score
+__attribute__((weak))
+void specfuzz_scoring(int count, int sum);
 
 #endif //SPECFUZZ_RTL_H
