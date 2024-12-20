@@ -184,8 +184,6 @@ long* nesting_level;
 #endif
 
 #define ASAN_MEMORY_ACCESS_CALLBACK_BODY(type, is_write, size, exp_arg, fatal) \
-    if (SANITIZER_MYRIAD2 && !AddrIsInMem(addr) && !AddrIsInShadow(addr))      \
-      return;                                                                  \
     uptr sp = MEM_TO_SHADOW(addr);                                             \
     uptr s = size <= SHADOW_GRANULARITY ? *reinterpret_cast<u8 *>(sp)          \
                                         : *reinterpret_cast<u16 *>(sp);        \
@@ -419,7 +417,6 @@ static void AsanInitInternal() {
   asan_init_is_running = true;
 
   CacheBinaryName();
-  CheckASLR();
 
   // Initialize flags. This must be done early, because most of the
   // initialization steps look at flags().
