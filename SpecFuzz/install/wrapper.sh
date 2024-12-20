@@ -31,6 +31,8 @@ flag_collect=0
 flag_function_list=0
 flag_branch_list=0
 flag_serialization_list=0
+flag_pruning_list=0
+flag_branch_log=0
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -95,6 +97,22 @@ while [ "$#" -gt 0 ]; do
             fi
             shift
         ;;
+        --pruning-list)
+            if [ $flag_pruning_list == 0 ]; then
+                LLCFLAGS+=" -x86-specfuzz-pruning-list=$2"
+                flag_pruning_list=1
+            fi
+            shift
+        ;;
+        
+        --branch-log)
+            if [ $flag_branch_log == 0 ]; then
+                LLCFLAGS+=" -x86-specfuzz-branch-log=$2"
+                flag_branch_log=1
+            fi
+            shift
+        ;;
+
         --branch-list)
             if [ $flag_branch_list == 0 ]; then
                 LLCFLAGS+=" -x86-specfuzz-branch-list=$2"
