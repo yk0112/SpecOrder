@@ -20,6 +20,8 @@ endif()
 
 add_public_tablegen_target(X86CommonTableGen)
 
+find_package(nlohmann_json 3.2.0 REQUIRED)
+
 set(sources
   # ShadowCallStack.cpp
   SpecFuzzPass.cpp
@@ -69,6 +71,8 @@ set(sources
   )
 
 add_llvm_target(X86CodeGen ${sources})
+
+target_link_libraries(LLVMX86CodeGen PRIVATE nlohmann_json::nlohmann_json)
 
 add_subdirectory(AsmParser)
 add_subdirectory(Disassembler)

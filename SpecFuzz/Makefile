@@ -1,5 +1,5 @@
 # Configuration
-ENABLE_PRIORITIZED_SIMULATION ?= 1
+ENABLE_PRIORITIZED_SIMULATION ?= 0
 REPORT_MEMORY_ERRORS ?= 1
 REPORT_CONTROL_FLOW_ERRORS ?= 1
 REPORT_WITH_OFFSET ?= 0
@@ -11,7 +11,7 @@ ENABLE_STATS ?= 0
 ENABLE_SEQUENTIAL_SIMULATION ?= 0
 DUMP_COVERAGE_AT_EXIT ?= 0
 PRINT_ROLLABACK_STATS ?= 0
-MAX_NESTING_LEVEL ?= 1
+MAX_NESTING_LEVEL ?= 3
 
 RUNTIME_CONFIGURATION := -DMAX_NESTING_LEVEL=$(MAX_NESTING_LEVEL)\
  -DENABLE_PRIORITIZED_SIMULATION=$(ENABLE_PRIORITIZED_SIMULATION)\
@@ -29,6 +29,7 @@ LLVM_SRC := $(shell $(LLVM_CONFIG) --src-root)
 COMPILER_RT_SRC ?= $(LLVM_SRC)/tools/compiler-rt-6.0.0.src
 LLVM_BUILD := $(shell $(LLVM_CONFIG) --bindir)/..
 CLANG := $(shell $(LLVM_CONFIG) --bindir)/clang
+CLANG2 := /usr/bin/clang-6.0
 INSTALL_DIR := $(LLVM_SRC)/lib/Target/X86/
 export INSTALL_DIR
 
@@ -43,20 +44,20 @@ HONGG_PATCH := $(wildcard install/patches/honggfuzz/*)
 all: pass runtime patch_llvm rebuild_llvm
 install: install_specfuzz install_tools
 
-pass: src/SpecFuzzPass.cpp
-	cp $< $(INSTALL_DIR)/SpecFuzzPass.cpp
+# pass: src/SpecFuzzPass.cpp
+# 	cp $< $(INSTALL_DIR)/SpecFuzzPass.cpp
 
 runtime: $(RUNTIME)
-	${CLANG} -O3 -enable-spec-em=false src/specfuzz_init.c -o specfuzz_init.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
-	${CLANG} -O3 -enable-spec-em=false src/specfuzz_rtl.S -o specfuzz_rtl.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
-	${CLANG} -O3 -enable-spec-em=false src/specfuzz_cov.c -o specfuzz_cov.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
+	${CLANG2} -O3 src/specfuzz_init.c -o specfuzz_init.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
+	${CLANG2} -O3 src/specfuzz_rtl.S -o specfuzz_rtl.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
+	${CLANG2} -O3 src/specfuzz_cov.c -o specfuzz_cov.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
 	ar rc $(LLVM_BUILD)/lib/libspecfuzz.a specfuzz_init.o specfuzz_rtl.o specfuzz_cov.o
 	rm specfuzz_rtl.o specfuzz_init.o
 
 patch_llvm: $(LLVM_PATCH)
 	# Connect SpecFuzz
-	cp install/patches/llvm/CMakeLists.txt install/patches/llvm/X86.h install/patches/llvm/X86TargetMachine.cpp $(LLVM_SRC)/lib/Target/X86/
-	#
+	# cp install/patches/llvm/CMakeLists.txt install/patches/llvm/X86.h install/patches/llvm/X86TargetMachine.cpp $(LLVM_SRC)/lib/Target/X86/
+	# #
 	# ASan patch
 	# cp install/patches/llvm/asan_poisoning.cc install/patches/llvm/asan_rtl.cc $(COMPILER_RT_SRC)/lib/asan/
 	# cp install/patches/llvm/sanitizer_coverage_libcdep_new.cc $(COMPILER_RT_SRC)/lib/sanitizer_common/
@@ -89,12 +90,13 @@ endif
 patch_hongg: $(HONGG_PATCH)
 	cp install/patches/honggfuzz/instrument.c $(HONGG_SRC)/libhfuzz/instrument.c
 	cp install/patches/honggfuzz/fuzz.c $(HONGG_SRC)/fuzz.c
+	cp install/patches/honggfuzz/input.c $(HONGG_SRC)/input.c
 	cp install/patches/honggfuzz/honggfuzz.h $(HONGG_SRC)/honggfuzz.h
 	cp install/patches/honggfuzz/trace.c $(HONGG_SRC)/linux/trace.c
 	sed -i -e 's:_HF_PERSISTENT_SIG:"":g' $(HONGG_SRC)/libhfuzz/fetch.c
 
 rebuild_hongg:
-	CC=${CLANG} CFLAGS=-ggdb make -C $(HONGG_SRC) -j4
+	CC=${CLANG2} CFLAGS=-ggdb make -C $(HONGG_SRC) -j4
 	make -C $(HONGG_SRC) install
 
 test:
