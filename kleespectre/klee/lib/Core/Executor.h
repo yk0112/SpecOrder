@@ -273,11 +273,13 @@ private:
     std::string location;
     int truePathCount;
     int falsePathCount;
+    int trueSpPathCount;
+    int falseSpPathCount;
   } BranchDirection;
 
   std::vector<BranchDirection> BranchesLog;
 
-  long long BranchesLogSum = 0; 
+  long long BranchesLogSum = 0;
 
   void dumpEmitBranch();
   
