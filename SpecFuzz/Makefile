@@ -44,8 +44,10 @@ HONGG_PATCH := $(wildcard install/patches/honggfuzz/*)
 all: pass runtime patch_llvm rebuild_llvm
 install: install_specfuzz install_tools
 
-# pass: src/SpecFuzzPass.cpp
-# 	cp $< $(INSTALL_DIR)/SpecFuzzPass.cpp
+pass: src/SpecFuzzPass.cpp
+	cp $< $(INSTALL_DIR)/SpecFuzzPass.cpp
+	cp src/CountSpWindowPass.cpp $(LLVM_SRC)/lib/Transforms/Scalar/
+	cp src/CountSpWindowPass.h $(LLVM_SRC)/../build/include/llvm/Transforms/Scalar/
 
 runtime: $(RUNTIME)
 	${CLANG2} -O3 src/specfuzz_init.c -o specfuzz_init.o -c -ggdb3 $(RUNTIME_CONFIGURATION)
@@ -56,12 +58,15 @@ runtime: $(RUNTIME)
 
 patch_llvm: $(LLVM_PATCH)
 	# Connect SpecFuzz
-	# cp install/patches/llvm/CMakeLists.txt install/patches/llvm/X86.h install/patches/llvm/X86TargetMachine.cpp $(LLVM_SRC)/lib/Target/X86/
-	# #
-	# ASan patch
-	# cp install/patches/llvm/asan_poisoning.cc install/patches/llvm/asan_rtl.cc $(COMPILER_RT_SRC)/lib/asan/
-	# cp install/patches/llvm/sanitizer_coverage_libcdep_new.cc $(COMPILER_RT_SRC)/lib/sanitizer_common/
+	 cp install/patches/llvm/CMakeLists.txt install/patches/llvm/X86.h install/patches/llvm/X86TargetMachine.cpp $(LLVM_SRC)/lib/Target/X86/
+	 cp install/patches/llvm/llvmir/BackendUtil.cpp $(LLVM_SRC)/tools/cfe-6.0.0.src/lib/CodeGen/
+	 cp install/patches/llvm/llvmir/InitializePasses.h $(LLVM_SRC)/include/llvm/
+	 cp install/patches/llvm/llvmir/Scalar.h $(LLVM_SRC)/include/llvm/Transforms/
+	 cp install/patches/llvm/llvmir/CMakeLists.txt $(LLVM_SRC)/lib/Transforms/Scalar/
 
+	# ASan patch
+	 cp install/patches/llvm/asan_poisoning.cc install/patches/llvm/asan_rtl.cc $(COMPILER_RT_SRC)/lib/asan/
+	 cp install/patches/llvm/sanitizer_coverage_libcdep_new.cc $(COMPILER_RT_SRC)/lib/sanitizer_common/
 	# SLH patch
 	# cp install/patches/llvm/X86SpeculativeLoadHardening.cpp $(LLVM_SRC)/lib/Target/X86/
 

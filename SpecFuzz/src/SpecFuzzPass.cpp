@@ -28,6 +28,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "MCTargetDesc/X86MCTargetDesc.h"
 #include "X86InstrInfo.h"
 #include "X86Subtarget.h"
 #include <stack>
@@ -131,6 +132,7 @@ class X86SpecFuzzPass : public MachineFunctionPass {
     
     std::unordered_map<std::string, int> BranchIndices;
     int CurrentIndex = 0;
+    int BranchKindsNum = 0;
 
     X86SpecFuzzPass() : MachineFunctionPass(ID) {
         initializeX86SpecFuzzPassPass(*PassRegistry::getPassRegistry());
@@ -360,9 +362,13 @@ auto X86SpecFuzzPass::visitFunction(MachineFunction &MF) -> bool {
         MachineInstr &FirstMI = *FirstMBB.getFirstNonDebugInstr();
         BuildMI(FirstMBB, FirstMI, FirstMI.getDebugLoc(), TII->get(X86::CALLpcrel32))
             .addExternalSymbol("specfuzz_init");
+
+        BuildMI(FirstMBB, FirstMI, FirstMI.getDebugLoc(), TII->get(X86::MOV64mi32))
+          .addReg(0).addImm(1)
+          .addReg(0).addExternalSymbol("BranchKindsNum")
+          .addReg(0).addImm(BranchKindsNum);       
     }
   
-
     return Modified;
 }
 
@@ -533,6 +539,7 @@ void X86SpecFuzzPass::addScoringPosition(MachineInstr &MI, MachineBasicBlock &Ta
     if(!Result) return;
 
     if (Result->truePath != 0 || Result->trueSpPath != 0) {
+        DEBUG(dbgs() << "Scoring1: " << LocationInfo);
         if(Result->truePath != 0) {
           TrueIndex = CurrentIndex; 
           CurrentIndex++;
@@ -544,6 +551,7 @@ void X86SpecFuzzPass::addScoringPosition(MachineInstr &MI, MachineBasicBlock &Ta
         ScoringBlocks[&Target] = {TrueIndex, TrueSpIndex};
     }
     if (Result->falsePath != 0 || Result->falseSpPath != 0) {
+        DEBUG(dbgs() << "Scoring1: " << LocationInfo);
         if(Result->falsePath != 0) {
           FalseIndex = CurrentIndex;
           CurrentIndex++;
@@ -1850,6 +1858,7 @@ void X86SpecFuzzPass::parseBranchLogFile(std::string &File, std::vector<BranchSc
         info.falseSpPath = branch["falseSpPath"].get<int>();
         BranchScores->push_back(info);
     }
+    BranchKindsNum = j["Sum"].get<int>();
 }
 
 

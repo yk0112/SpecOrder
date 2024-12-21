@@ -22,3 +22,6 @@ void specfuzz_cov_trace_pc(uintptr_t pc) {
 
 __attribute__((weak))
 void specfuzz_cov_vuln(uintptr_t pc) {}
+
+__attribute__((weak))
+void specfuzz_scoring(int count, int sum) {};
