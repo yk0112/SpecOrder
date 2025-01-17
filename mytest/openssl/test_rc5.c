@@ -11,9 +11,9 @@
  * RC5 low level APIs are deprecated for public use, but still ok for internal
  * use.
  */
+
 #include "internal/deprecated.h"
 #include "rc5_local.h"
-#include <klee/klee.h>
 #include <openssl/rc5.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,7 +22,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -32,12 +32,10 @@ uint8_t temp = 0;
 uint8_t spec_idx = 0;
 #endif
 
-/*
- * The input and output encrypted as though 64bit cfb mode is being used.
- * The extra state information to record how much of the 64bit block we have
- * used is contained in *num;
- */
-
+#ifdef KLEE
+#include <klee/klee.h>
+#endif
+ 
 int RC5_32_set_key(RC5_32_KEY *key, int len, const unsigned char *data,
                    int rounds) {
   RC5_32_INT L[64], l, ll, A, B, *S, k;
@@ -262,7 +260,7 @@ int main(int argc, char **argv) {
   }
   fclose(file);
 
-  if (file_size < 62) {
+  if (file_size < 67) {
     fprintf(stderr, "Insufficient data in file\n");
     free(buffer);
     return 1;
@@ -272,37 +270,24 @@ int main(int argc, char **argv) {
   unsigned char buf[16], buf2[16], ivb[16], plain[16];
   unsigned int key_len;
   unsigned char key_data[16];
-  int num, rounds;
+  int num, rounds, encrypt;
 
-#ifdef SPECTRE_VARIANT
+  #ifdef SPECTRE_VARIANT
   memcpy(&spec_idx, buffer, sizeof(uint8_t));
-#endif
+  #endif
 
-  memcpy(&key_len, buffer + sizeof(uint8_t), sizeof(key_len));
-  memcpy(key_data, buffer + sizeof(uint8_t) + sizeof(unsigned int), 16);
-  memcpy(&rounds, buffer + sizeof(uint8_t) + sizeof(unsigned int) + 16,
-         sizeof(int));
-  memcpy(plain,
-         buffer + sizeof(uint8_t) + sizeof(unsigned int) + 16 + sizeof(int),
-         16);
-  memcpy(ivb,
-         buffer + sizeof(uint8_t) + sizeof(unsigned int) + 16 + sizeof(int) +
-             16,
-         16);
-  memcpy(&num,
-         buffer + sizeof(uint8_t) + sizeof(unsigned int) + 16 + sizeof(int) +
-             16 + sizeof(int),
-         sizeof(int));
+  memcpy(key_data, buffer + sizeof(uint8_t), 16);
+  memcpy(&rounds, buffer + sizeof(uint8_t) + 16, sizeof(int));
+  memcpy(plain, buffer + sizeof(uint8_t) + 16 + sizeof(int), 16);
+  memcpy(ivb, buffer + sizeof(uint8_t) + 16 + sizeof(int) + 16, 16);
+  memcpy(&num, buffer + sizeof(uint8_t) + 16 + sizeof(int) + 16 + 16, sizeof(int));
+  memcpy(&encrypt, buffer + sizeof(uint8_t) + 16 + sizeof(int) + 16 + 16 + sizeof(int), sizeof(int));
+  memcpy(&key_len, buffer + sizeof(uint8_t) + 16 + sizeof(int) + 16 + 16 + sizeof(int) * 2, sizeof(unsigned int));
 
-  key_len = key_len % 16;
   num = num % 16;
-
-  if (!RC5_32_set_key(&key, key_len, key_data, rounds))
-    return 0;
-
-  RC5_32_cfb64_encrypt(plain, buf, sizeof(plain), &key, ivb, &num, RC5_ENCRYPT);
-
-  RC5_32_cfb64_encrypt(buf, buf2, sizeof(buf), &key, ivb, &num, RC5_DECRYPT);
+   
+  RC5_32_set_key(&key, key_len, key_data, rounds);
+  RC5_32_cfb64_encrypt(plain, buf, 16, &key, ivb, &num, encrypt);
 
   return 0;
 }

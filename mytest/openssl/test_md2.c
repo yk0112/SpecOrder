@@ -11,10 +11,9 @@
  * MD2 low level APIs are deprecated for public use, but still ok for
  * internal use.
  */
-#include "internal/deprecated.h"
 
+#include "internal/deprecated.h"
 #include "internal/cryptlib.h"
-#include <klee/klee.h>
 #include <openssl/md2.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,7 +22,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -33,10 +32,10 @@ uint8_t temp = 0;
 uint8_t spec_idx = 0;
 #endif
 
-/*
- * This is a separate file so that #defines in cryptlib.h can map my MD
- * functions to different names
- */
+#ifdef KLEE
+#include <klee/klee.h>
+#endif
+
 #define UCHAR unsigned char
 
 static void md2_block(MD2_CTX *c, const unsigned char *d);
@@ -76,6 +75,14 @@ const char *MD2_options(void) {
     return "md2(int)";
 }
 
+int MD2_Init(MD2_CTX *c)
+{
+    c->num = 0;
+    memset(c->state, 0, sizeof(c->state));
+    memset(c->cksm, 0, sizeof(c->cksm));
+    memset(c->data, 0, sizeof(c->data));
+    return 1;
+}
 
 int MD2_Update(MD2_CTX *c, const unsigned char *data, size_t len) {
   register UCHAR *p;
@@ -127,6 +134,7 @@ static void md2_block(MD2_CTX *c, const unsigned char *d) {
   sp1 = c->state;
   sp2 = c->cksm;
   j = sp2[MD2_BLOCK - 1];
+
   for (i = 0; i < 16; i++) {
     state[i] = sp1[i];
     state[i + 16] = t = d[i];
@@ -162,9 +170,8 @@ static void md2_block(MD2_CTX *c, const unsigned char *d) {
 
 #ifdef KLEE
 int main() {
-  MD2_CTX c, c1;
+  MD2_CTX c1;
   unsigned char data[16];
-  unsigned char md[16];
   size_t len;
 
   #ifdef SPECTRE_VARIANT
@@ -173,12 +180,9 @@ int main() {
   spec_idx = idx;
   #endif
 
-  // klee_make_symbolic(data, sizeof(data), "data");
   klee_make_symbolic(&len, sizeof(len), "len");
-  // klee_make_symbolic(&c, sizeof(c), "c");
   klee_make_symbolic(&c1, sizeof(c1), "c1");
 
-  // MD2_Init(&c);
   MD2_Update(&c1, data, len);
 
   return 0;
@@ -186,49 +190,41 @@ int main() {
 #endif
 
 #ifdef FUZZ
-int main(int argc, char **argv) {
-  FILE *file = fopen(argv[1], "r");
 
-  fseek(file, 0, SEEK_END);
-  long file_size = ftell(file);
-  rewind(file);
+int main(int argc, char **argv)
+{	
+    FILE *file = fopen(argv[1], "r");
+    
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    rewind(file);
 
-  unsigned char *buffer = malloc(file_size);
-
-  if (!buffer) {
+    unsigned char *buffer = malloc(file_size);
+    
+    if (fread(buffer, 1, file_size, file) != file_size) {
+        perror("Failed to read input file");
+        free(buffer);
+        fclose(file);
+        return 1;
+    }
     fclose(file);
-    return 1;
-  }
 
-  if (fread(buffer, 1, file_size, file) != file_size) {
-    free(buffer);
-    fclose(file);
-    return 1;
-  }
-  fclose(file);
+    if (file_size < sizeof(MD2_CTX) + 2) {
+        fprintf(stderr, "Input file is too small for testing.\n");
+        free(buffer);
+        return 1;
+    }
+    
+    memcpy(&spec_idx, buffer, sizeof(uint8_t));
+    
+    MD2_CTX context;
+    memcpy(&context, buffer + sizeof(uint8_t), sizeof(MD2_CTX));
+    
+    const unsigned char *data = buffer + sizeof(uint8_t) + sizeof(MD2_CTX);
+    size_t len = file_size - sizeof(MD2_CTX) - sizeof(uint8_t);
 
-  if (file_size < 26 + sizeof(MD2_CTX)) {
-    fprintf(stderr, "Insufficient data in file\n");
-    free(buffer);
-    return 1;
-  }
-
-  MD2_CTX c;
-  unsigned char data[16];
-  size_t len;
-
-  #ifdef SPECTRE_VARIANT
-  memcpy(&spec_idx, buffer, sizeof(uint8_t));
-  #endif
-
-  memcpy(data, buffer + sizeof(uint8_t), 16);
-  memcpy(&len, buffer + sizeof(uint8_t) + 16, sizeof(size_t));
-  memcpy(&c, buffer + sizeof(uint8_t) + 16 + sizeof(size_t)), sizeof(MD2_CTX));
-
-  len = len % 16;
-
-  MD2_Update(&c, data, len);
-
-  return 0;
+    MD2_Update(&context, data, len);
+    
+    return 0;
 }
 #endif

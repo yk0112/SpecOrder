@@ -16,16 +16,10 @@
  * 1.0 First working version
  */
 
-/*
- * DES low level APIs are deprecated for public use, but still ok for internal
- * use.
- */
 #include "internal/deprecated.h"
-
 #include "des_local.h"
 #include "internal/constant_time.h"
 #include "internal/nelem.h"
-#include <klee/klee.h>
 #include <openssl/crypto.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,7 +28,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -42,6 +36,10 @@ uint8_t array1[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 uint8_t array2[256 * 512];
 uint8_t temp = 0;
 uint8_t spec_idx = 0;
+#endif
+
+#ifdef KLEE
+#include <klee/klee.h>
 #endif
 
 const DES_LONG DES_SPtrans[8][64] = {
@@ -745,3 +743,62 @@ int main() {
   return 0;
 }
 #endif
+
+#ifdef FUZZ
+int main(int argc, char **argv) {
+  FILE *file = fopen(argv[1], "r");
+
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  rewind(file);
+
+  unsigned char *buffer = malloc(file_size);
+
+  if (!buffer) {
+    fclose(file);
+    return 1;
+  }
+
+  if (fread(buffer, 1, file_size, file) != file_size) {
+    free(buffer);
+    fclose(file);
+    return 1;
+  }
+  fclose(file);
+
+  if (file_size < 86) {
+    fprintf(stderr, "Insufficient data in file\n");
+    free(buffer);
+    return 1;
+  }
+
+  unsigned char key_data[16];
+  unsigned char cbc_data[40];
+  unsigned char cbc_out[40];
+  unsigned char cbc_key1[8], cbc_key2[8], cbc_key3[8];
+  unsigned char cbc_iv[8];
+  DES_key_schedule ks1, ks2, ks3;
+  int encrypt;
+  unsigned long length;
+
+  #ifdef SPECTRE_VARIANT
+  memcpy(&spec_idx, buffer, sizeof(uint8_t));
+  #endif
+
+  memcpy(cbc_key1, buffer + sizeof(uint8_t), 8);
+  memcpy(cbc_key2, buffer + sizeof(uint8_t) + 8, 8);
+  memcpy(cbc_key3, buffer + sizeof(uint8_t) + 16, 8);
+  memcpy(cbc_data, buffer + sizeof(uint8_t) + 24, 40);
+  memcpy(&length, buffer + sizeof(uint8_t) + 64, sizeof(unsigned long));
+  memcpy(&cbc_iv, buffer + sizeof(uint8_t) + 64 + sizeof(unsigned long), 8);
+  memcpy(&encrypt, buffer + sizeof(uint8_t) + 72 + sizeof(unsigned long), sizeof(int));
+  
+  DES_set_key_checked(&cbc_key1, &ks1);
+  DES_set_key_checked(&cbc_key2, &ks2);
+  DES_set_key_checked(&cbc_key3, &ks3);
+  DES_ede3_cbc_encrypt(cbc_data, cbc_out, length, &ks1, &ks2, &ks3, &cbc_iv,
+                       encrypt);
+  return 0;
+}
+#endif
+

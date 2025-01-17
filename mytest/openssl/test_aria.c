@@ -17,12 +17,9 @@
  *
  * Public domain version is distributed above.
  */
-
 #include "crypto/aria.h"
 #include <openssl/e_os2.h>
-
 #include <assert.h>
-#include <klee/klee.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,7 +27,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -40,6 +37,9 @@ uint8_t temp = 0;
 uint8_t spec_idx = 0;
 #endif
 
+#ifdef KLEE
+#include <klee/klee.h>
+#endif
 /* rotation */
 #define rotl32(v, r) (((uint32_t)(v) << (r)) | ((uint32_t)(v) >> (32 - r)))
 #define rotr32(v, r) (((uint32_t)(v) >> (r)) | ((uint32_t)(v) << (32 - r)))
@@ -679,3 +679,53 @@ int main() {
   return 0;
 }
 #endif
+
+
+#ifdef FUZZ
+int main(int argc, char **argv) {
+  FILE *file = fopen(argv[1], "r");
+
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  rewind(file);
+
+  unsigned char *buffer = malloc(file_size);
+
+  if (!buffer) {
+    fclose(file);
+    return 1;
+  }
+
+  if (fread(buffer, 1, file_size, file) != file_size) {
+    free(buffer);
+    fclose(file);
+    return 1;
+  }
+  fclose(file);
+
+  if (file_size < 135) {
+    fprintf(stderr, "Insufficient data in file\n");
+    free(buffer);
+    return 1;
+  }
+
+  ARIA_KEY key;
+  unsigned char userKey[64], in[64], out[64];
+  unsigned int bits;
+
+  #ifdef SPECTRE_VARIANT
+  memcpy(&spec_idx, buffer, sizeof(uint8_t));
+  #endif
+
+  memcpy(userKey, buffer + sizeof(uint8_t), 64);
+  memcpy(&bits, buffer + sizeof(uint8_t) + 64, sizeof(unsigned int));
+  memcpy(in, buffer + sizeof(uint8_t) + 64 + sizeof(unsigned int), 64);
+
+  ossl_aria_set_encrypt_key(userKey, bits, &key);
+  ossl_aria_encrypt(in, out, &key);
+  ossl_aria_set_decrypt_key(userKey, bits, &key);
+
+  return 0;
+}
+#endif
+

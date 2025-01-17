@@ -6,16 +6,13 @@
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
-
 /*
  * IDEA low level APIs are deprecated for public use, but still ok for internal
  * use where we're using them to implement the higher level EVP interface, as is
  * the case here.
  */
 #include "internal/deprecated.h"
-
 #include "idea_local.h"
-#include <klee/klee.h>
 #include <openssl/idea.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +21,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -34,6 +31,9 @@ uint8_t temp = 0;
 uint8_t spec_idx = 0;
 #endif
 
+#ifdef KLEE
+#include <klee/klee.h>
+#endif
 
 static IDEA_INT inverse(unsigned int xin);
 

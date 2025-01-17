@@ -6,26 +6,18 @@
  * in the file LICENSE in the source distribution or at
  * https://www.openssl.org/source/license.html
  */
-
-/*
- * CAST low level APIs are deprecated for public use, but still ok for
- * internal use.
- */
 #include "internal/deprecated.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <klee/klee.h>
-#
 #include <openssl/cast.h>
 #include "cast_local.h"
 #include "cast_s.h"
 
-
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #ifdef SPECTRE_VARIANT
   #define ARRAY1_SIZE 16
@@ -33,6 +25,10 @@
   uint8_t array2[256 * 512];
   uint8_t temp = 0;
   uint8_t spec_idx = 0;
+#endif
+
+#ifdef KLEE
+#include <klee/klee.h>
 #endif
 
 #define CAST_exp(l,A,a,n) \
@@ -222,10 +218,9 @@ int main()
     CAST_KEY key;
     unsigned char data[16];
     unsigned char in[16],out[16],ivec[16];
-    unsigned int len;
+    unsigned int len, num;
     long length;
     int encrypt;
-    unsigned int num;
     
     #ifdef SPECTRE_VARIANT
     size_t idx;
@@ -249,3 +244,61 @@ int main()
     return 0;
 }
 #endif
+
+
+#ifdef FUZZ
+int main(int argc, char **argv) {
+  FILE *file = fopen(argv[1], "r");
+
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  rewind(file);
+
+  unsigned char *buffer = malloc(file_size);
+
+  if (!buffer) {
+    fclose(file);
+    return 1;
+  }
+
+  if (fread(buffer, 1, file_size, file) != file_size) {
+    free(buffer);
+    fclose(file);
+    return 1;
+  }
+  fclose(file);
+
+  if (file_size < 70) {
+    fprintf(stderr, "Insufficient data in file\n");
+    free(buffer);
+    return 1;
+  }
+
+  CAST_KEY key;
+  unsigned char data[16];
+  unsigned char in[16],out[16],ivec[16];
+  unsigned int len, num;
+  long length;
+  int encrypt;
+
+  #ifdef SPECTRE_VARIANT
+  memcpy(&spec_idx, buffer, sizeof(uint8_t));
+  #endif
+
+  memcpy(data, buffer + sizeof(uint8_t), 16);
+  memcpy(&len, buffer + sizeof(uint8_t) + 16, sizeof(unsigned int));
+  memcpy(&in, buffer + sizeof(uint8_t) + 16 + sizeof(unsigned int), 16);
+  memcpy(&length, buffer + sizeof(uint8_t) + 32 + sizeof(unsigned int), sizeof(long));
+  memcpy(&ivec, buffer + sizeof(uint8_t) + 32 + sizeof(unsigned int) + sizeof(long), 16);
+  memcpy(&num, buffer + sizeof(uint8_t) + 48 + sizeof(unsigned int) + sizeof(long), sizeof(unsigned int));
+  memcpy(&encrypt, buffer + sizeof(uint8_t) + 48 + sizeof(unsigned int) + sizeof(long) + sizeof(unsigned int), sizeof(int));
+  num = num % 16; 
+
+  CAST_set_key(&key, len, data);
+  CAST_cfb64_encrypt(in, out, length, &key, ivec, &num, encrypt);
+
+  return 0;
+}
+#endif
+
+

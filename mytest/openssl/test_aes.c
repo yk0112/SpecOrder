@@ -36,13 +36,6 @@
 /* Note: rewritten a little bit to provide error control and an OpenSSL-
    compatible API */
 
-/*
- * AES low level APIs are deprecated for public use, but still ok for internal
- * use where we're using them to implement the higher level EVP interface, as is
- * the case here.
- */
-
-#include <klee/klee.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,7 +43,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define KLEE
+#define FUZZ
 
 #define FULL_UNROLL
 
@@ -60,6 +53,10 @@ uint8_t array1[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 uint8_t array2[256 * 512];
 uint8_t temp = 0;
 uint8_t spec_idx = 0;
+#endif
+
+#ifdef KLEE
+#include <klee/klee.h>
 #endif
 
 typedef uint64_t u64;
@@ -628,11 +625,11 @@ int AES_set_encrypt_key(const unsigned char *userKey, const int bits,
       }
       rk += 4;
     }
-#ifdef SPECTRE_VARIANT
+    #ifdef SPECTRE_VARIANT
     if (spec_idx < ARRAY1_SIZE) {
       temp &= array2[array1[spec_idx] * 512];
     }
-#endif
+    #endif
   }
   rk[4] = GETU32(userKey + 16);
   rk[5] = GETU32(userKey + 20);
@@ -825,11 +822,11 @@ void AES_encrypt(const unsigned char *in, unsigned char *out,
       t3 = Te0[s3 >> 24] ^ Te1[(s0 >> 16) & 0xff] ^ Te2[(s1 >> 8) & 0xff] ^
            Te3[s2 & 0xff] ^ rk[55];
 
-#ifdef SPECTRE_VARIANT
+      #ifdef SPECTRE_VARIANT
       if (spec_idx < ARRAY1_SIZE) {
         temp &= array2[array1[spec_idx] * 512];
       }
-#endif
+      #endif
     }
   }
   rk += key->rounds << 2;
@@ -1011,13 +1008,13 @@ void AES_decrypt(const unsigned char *in, unsigned char *out,
     t3 = Td0[s3 >> 24] ^ Td1[(s2 >> 16) & 0xff] ^ Td2[(s1 >> 8) & 0xff] ^
          Td3[s0 & 0xff] ^ rk[47];
 
-#ifdef SPECTRE_VARIANT
+    #ifdef SPECTRE_VARIANT
     if (spec_idx < ARRAY1_SIZE) {
       if (spec_idx < ARRAY1_SIZE) {
         temp &= array2[array1[spec_idx] * 512];
       }
     }
-#endif
+    #endif
 
     if (key->rounds > 12) {
       /* round 12: */
@@ -1096,7 +1093,7 @@ int main() {
   unsigned char input[128];
   unsigned char output[128];
   AES_KEY aes_key;
-  int bits, enc;
+  int bits;
 
   #ifdef SPECTRE_VARIANT
   size_t idx;
@@ -1116,3 +1113,56 @@ int main() {
   return 0;
 }
 #endif
+
+
+#ifdef FUZZ
+int main(int argc, char **argv) {
+  FILE *file = fopen(argv[1], "r");
+
+  fseek(file, 0, SEEK_END);
+  long file_size = ftell(file);
+  rewind(file);
+
+  unsigned char *buffer = malloc(file_size);
+
+  if (!buffer) {
+    fclose(file);
+    return 1;
+  }
+
+  if (fread(buffer, 1, file_size, file) != file_size) {
+    free(buffer);
+    fclose(file);
+    return 1;
+  }
+  fclose(file);
+
+  if (file_size < 265) {
+    fprintf(stderr, "Insufficient data in file\n");
+    free(buffer);
+    return 1;
+  }
+  
+  unsigned char key_data[128];
+  unsigned char input[128];
+  unsigned char output[128];
+  AES_KEY aes_key;
+  int bits;
+
+  #ifdef SPECTRE_VARIANT
+  memcpy(&spec_idx, buffer, sizeof(uint8_t));
+  #endif
+
+  memcpy(key_data, buffer + sizeof(uint8_t), 128);
+  memcpy(&bits, buffer + sizeof(uint8_t) + 128, sizeof(int));
+  memcpy(input, buffer + sizeof(uint8_t) + 128 + sizeof(int), 128);
+
+  AES_set_encrypt_key(key_data, bits, &aes_key);
+  AES_encrypt(input, output, &aes_key);
+  AES_decrypt(output, input, &aes_key);
+
+  return 0;
+}
+#endif
+
+
