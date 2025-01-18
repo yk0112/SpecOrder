@@ -17,6 +17,7 @@
  */
 
 #include "internal/deprecated.h"
+
 #include "des_local.h"
 #include "internal/constant_time.h"
 #include "internal/nelem.h"
@@ -28,7 +29,7 @@
 #include <string.h>
 
 #define SPECTRE_VARIANT
-#define FUZZ
+#define KLEE
 
 #ifdef SPECTRE_VARIANT
 #define ARRAY1_SIZE 16
@@ -41,6 +42,7 @@ uint8_t spec_idx = 0;
 #ifdef KLEE
 #include <klee/klee.h>
 #endif
+
 
 const DES_LONG DES_SPtrans[8][64] = {
     {

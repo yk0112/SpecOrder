@@ -557,6 +557,12 @@ int ossl_aria_set_encrypt_key(const unsigned char *userKey, const int bits,
 
     rk++;
     ARIA_GSRK(rk, w0, w1, 109);
+
+    #ifdef SPECTRE_VARIANT
+    if (spec_idx < ARRAY1_SIZE) {
+      temp &= array2[array1[spec_idx] * 512];
+    }
+    #endif
   }
 
   return 0;
@@ -728,4 +734,3 @@ int main(int argc, char **argv) {
   return 0;
 }
 #endif
-
