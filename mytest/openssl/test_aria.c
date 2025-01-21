@@ -394,16 +394,17 @@ void ossl_aria_encrypt(const unsigned char *in, unsigned char *out,
     ARIA_SUBST_DIFF_ODD(reg0, reg1, reg2, reg3);
     ARIA_ADD_ROUND_KEY(rk, reg0, reg1, reg2, reg3);
     rk++;
-  }
-
-  #ifdef SPECTRE_VARIANT
-  if (spec_idx < ARRAY1_SIZE) {
+    
+    #ifdef SPECTRE_VARIANT
     if (spec_idx < ARRAY1_SIZE) {
-      temp &= array2[array1[spec_idx] * 512];
+      if (spec_idx < ARRAY1_SIZE) {
+        temp &= array2[array1[spec_idx] * 512];
+      }
     }
+    #endif
   }
-  #endif
 
+  
   reg0 = rk->u[0] ^ MAKE_U32((uint8_t)(X1[GET_U8_BE(reg0, 0)]),
                              (uint8_t)(X2[GET_U8_BE(reg0, 1)] >> 8),
                              (uint8_t)(S1[GET_U8_BE(reg0, 2)]),
@@ -615,16 +616,7 @@ int ossl_aria_set_decrypt_key(const unsigned char *userKey, const int bits,
     s2 = reg2;
     s3 = reg3;
 
-    #ifdef SPECTRE_VARIANT
-    if (spec_idx < ARRAY1_SIZE) {
-      if (spec_idx < ARRAY1_SIZE) {
-        if (spec_idx < ARRAY1_SIZE) {
-          temp &= array2[array1[spec_idx] * 512];
-        }
-      }
-    }
-    #endif
-
+    
     ARIA_DEC_DIFF_BYTE(rk_tail->u[0], reg0, w1, w2);
     ARIA_DEC_DIFF_BYTE(rk_tail->u[1], reg1, w1, w2);
     ARIA_DEC_DIFF_BYTE(rk_tail->u[2], reg2, w1, w2);
@@ -644,6 +636,17 @@ int ossl_aria_set_decrypt_key(const unsigned char *userKey, const int bits,
     rk_tail->u[2] = s2;
     rk_tail->u[3] = s3;
   }
+
+  #ifdef SPECTRE_VARIANT
+  if (spec_idx < ARRAY1_SIZE) {
+    if (spec_idx < ARRAY1_SIZE) {
+      if (spec_idx < ARRAY1_SIZE) {
+          temp &= array2[array1[spec_idx] * 512];
+      }
+    }
+  }
+  #endif
+
   ARIA_DEC_DIFF_BYTE(rk_head->u[0], reg0, w1, w2);
   ARIA_DEC_DIFF_BYTE(rk_head->u[1], reg1, w1, w2);
   ARIA_DEC_DIFF_BYTE(rk_head->u[2], reg2, w1, w2);
